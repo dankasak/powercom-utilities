@@ -1,0 +1,146 @@
+Welcome.
+
+==============
+Pre-requisites
+==============
+
+---------------
+1 - libpowercom
+---------------
+
+This software is designed to work with 'libpowercom', which is a C library / test application
+designed for 'Sunny Roo' inverters. You should first compile the library ( ie in the
+'libpowercom' folder ). This doesn't work 'out of the box' for me. Edit the Makefile, and on
+the line that says:
+
+ CFLAGS  = -Wall -O3
+
+ ... change it to say:
+
+ CFLAGS  = -Wall -O3 -fPIC
+
+Now type 'make' to build. Finally type 'make install' ( as root ) to install the libraries.
+
+Next, compile the test application, powercom-test, like this:
+
+ gcc powercom-test.c -o powercom-test -lpowercom
+
+Install the library into /usr/lib or whatever. Make powercom-test SUID root:
+
+ chmod +s powercom-test
+
+It needs root permissions to run. Alternatively, solve this issue your own way. Then install
+powercom-test into your PATH ( eg sudo cp powercom-test /usr/local/bin ).
+
+Test powercom-test at this point. It should dump some registers to STDOUT. If you can't get
+it to do this, there's no point in going any further. I can't really help with things up
+to this point ... bug the author ;)
+
+By the way - I've left some binaries in the libpowercom folder. These are built for my
+system. If they work for you, good. If not, remove them and build as per above.
+
+---------------
+2 - DBD::SQLite
+---------------
+
+Your system should have perl. It mightn't have DBD::SQLite. Install it using your package
+manager, or get it from cpan.
+
+--------------------------
+3 - Gtk3 and Perl bindings
+--------------------------
+
+The GUI is a Perl / GTK3 app. You should have Gtk3 installed already on a modern linux
+installation. You most likely will not have the Gtk3 bindings. If your distro packages
+it, you can try their version. But, since it's a work-in-progress, you're probably better
+off installing the latest version from CPAN. eg, as root, do:
+
+cpan
+install Gtk3
+
+--------------------------
+4 - Gtk3::Ex::DBI
+--------------------------
+
+This is another of my projects. Either get it from CPAN, or from
+http://tesla.duckdns.org
+
+=====================
+Initial configuration
+=====================
+
+Now you should be ready to run the polling app. Do this ( in the directory containing
+the file of course ):
+
+ perl powercom_poll.pl
+
+Upon an inital installation, the following things should happen:
+
+ - ~/.powercom             created. This is the directory where stats files are dumped to initially.
+ - ~/.powercom/processed   created. This is the directory where stats files are archived to.
+ - ~/.powercom/powercom.db created. This is a sqlite database where stats are stored.
+ - the powercom-test binary gets located and it's path stored in the sqlite database.
+
+If this stuff doesn't happen, report back to me what DID happen, and I'll fix it.
+
+======================
+powercom_poll.pl usage
+======================
+
+Every time you run powercom_poll.pl, it will execute the powercom-test binary, and direct
+the output to a file, with the filename being timestamped. It will then attempt to parse
+the contents of the file. If everything goes according to plan, the contents of the registers
+( slightly transformed where appropriate ) will get inserted into the sqlite database.
+Finally the file will get moved to the 'processed' directory.
+
+If something goes wrong during parsing, the file will remain in the top-level directory.
+You can run powercom_poll.pl with the --parse-file= arg to skip calling powercom-test,
+and instead have another go at parsing the file and inserting the stats into the
+sqlite database. This shouldn't normally be needed, of course, but at least this allows
+us to 'catch up' parsing and inserting stats if a situation occurs.
+
+You can see the stats in the sqlite database by doing:
+
+cd ~/.powercom
+sqlite3 powercom.db
+select * from readings;
+
+You can exit sqlite by typing:
+.quit
+
+Once you've gotten powercom_poll.pl working nicely, add it to cron. I run mine every minute.
+
+=====================
+powercom_gui.pl usage
+=====================
+
+Note that the GUI won't start up properly before powercom_poll.pl has successfully run at
+least once. This is because the polling script is designed as a stand-alone app that
+creates the initial configuration and storage database. The GUI is an optional extra.
+
+The GUI is started by running 'perl powercom_gui.pl'. When it starts up, it will summarise
+your readings into the 'daily_summary' table. The top half of the main window is a
+graph of temperature ( top, red ) and instantaneous kW ( bottom, blue ). The bottom half
+of the screen has 2 pages. One contains 2 datasheets - the daily summary ( left ), and
+every reading ( right ) for the selected day. When you select a day, the graph should be
+rendered. The 2nd page is a config page. At the moment, the only things you can configure
+are your PVOutput login details.
+
+You can edit data in the summary datasheet ( hit apply to store in the database ). The 2
+'upload' buttons are for uploading your stats to http://www.pvoutput.org. You can either
+upload all ( not already uploaded ) stats, or you can upload *just* the selected day.
+If you upload stats for a day that's already been uploaded, the current stats will replace
+the previous stats. There is also a button to recalculate stats for the currently
+selected day. You'd typically do this when monitoring today's stats, as they ( ie the
+totals ) won't automatically get updated during the day ( currently ). You can also tweak
+your readings data and then recalculate your daily stats. This might be needed if your
+inverter provides you with a HUGE readings for some reasons, and PVOutput prevents you
+from uploading stats because they exceed your max.
+
+==========================
+Porting to other Inverters
+==========================
+
+powercom_poll.pl is quite specific to this inverter, but the storage of stats, the
+GUI ( ie powercom_gui.pl ), and the pvoutput API should work with any inverter. I'd be
+happy to merge in any patches to add support for other inverters.
