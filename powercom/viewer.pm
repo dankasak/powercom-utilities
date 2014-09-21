@@ -37,9 +37,13 @@ sub new {
     $self->{builder}->get_object( "APIKey" )->set_text( $self->{globals}->{config_manager}->simpleGet( "APIKey" ) || "" );
     $self->{builder}->get_object( "SYS_ID" )->set_text( $self->{globals}->{config_manager}->simpleGet( "SYS_ID" ) || "" );
     
-    # We cache this value for later - the graph uses it
+    # We cache thes value for later - the graph uses them
     $self->{globals}->{Panels_Max_Watts} = $self->{globals}->{config_manager}->simpleGet( "Panels_Max_Watts" ) || 2000;
     $self->{builder}->get_object( "Panels_Max_Watts" )->set_text( $self->{globals}->{Panels_Max_Watts} );
+    $self->{globals}->{Graph_Min_Hour} = defined $self->{globals}->{config_manager}->simpleGet( "Graph_Min_Hour" ) ? $self->{globals}->{config_manager}->simpleGet( "Graph_Min_Hour" ) : 6;
+    $self->{builder}->get_object( "Graph_Min_Hour" )->set_text( $self->{globals}->{Graph_Min_Hour} );
+    $self->{globals}->{Graph_Max_Hour} = defined $self->{globals}->{config_manager}->simpleGet( "Graph_Max_Hour" ) ? $self->{globals}->{config_manager}->simpleGet( "Graph_Max_Hour" ) : 23;
+    $self->{builder}->get_object( "Graph_Max_Hour" )->set_text( $self->{globals}->{Graph_Max_Hour} );
     
     $self->{daily_summary} = Gtk3::Ex::DBI::Datasheet->new(
         {
@@ -72,6 +76,9 @@ sub new {
                                   , {
                                         name        => "total kWh"
                                       , x_percent   => 25
+                                      , number      => {
+                                                           decimal_places  => 1
+                                                       }
                                     }
                                   , {
                                         name        => "weather condition"
@@ -102,6 +109,7 @@ sub new {
                                     select          => "reading_datetime, heat_sink_temperature, ac_power / 20, panel_1_voltage, line_current",
 #                                    select          => "*"
                                   , from            => "readings"
+                                  , where           => "0=1"
                                   , order_by        => "id"
                                }
 #          , treeview        => $self->{builder}->get_object( "readings_datasheet" )
@@ -404,17 +412,17 @@ sub render_graph {
     print "total height: $total_height\n";
     print "==================================\n";
     
+    my $earliest_sec = $self->{globals}->{Graph_Min_Hour} * 3600;
+    my $latest_sec   = $self->{globals}->{Graph_Max_Hour} * 3600;
+    my $sec_scale    = $total_width / ( $latest_sec - $earliest_sec );
+    
     $cairo_context->rectangle( 0, 0, $total_width, $total_height );
     $cairo_context->fill;
-    
-    my $graph_left_border = 0;
     
     # We also want a bottom buffer of 20 for the legend
     my $graph_area_height = $total_height; # - 20;
     
     use constant  NO_OF_GRAPHS  => 2;
-    
-    my $reading_scale          = $total_width / $self->{no_of_readings};
     
     my $temperature_y_scale    = $graph_area_height / ( $self->{max_heat_sink_temperature} ) / NO_OF_GRAPHS;
     my $ac_power_y_scale       = $graph_area_height / ( $self->{max_ac_power} ) / NO_OF_GRAPHS;
@@ -425,15 +433,28 @@ sub render_graph {
     $cairo_context->set_line_width( 3 );
     $cairo_context->move_to( 0, $graph_area_height );
     
-    my $heat_context = Cairo::Context->create( $surface );
-    $heat_context->set_source_rgb( 255, 0, 0 );
+    my $heat_context  = Cairo::Context->create( $surface );
+    my $heat_gradient = Cairo::LinearGradient->create( $total_width / 2, $total_height / 2 , $total_width / 2, 0 );
+
+    $heat_gradient->add_color_stop_rgba( 0  , 1,   0, 1  , 1 );
+    $heat_gradient->add_color_stop_rgba( 0.5, 1, 0.4, 0.7, 1 );
+    $heat_gradient->add_color_stop_rgba( 1  , 1,   0, 0  , 1 );
+    
+    $heat_context->set_source( $heat_gradient );
+    
     $heat_context->set_line_width( 3 );
     $heat_context->move_to( 0, $y_segment * 1 ) ;
     
     print "HEAT BASE: " . $y_segment . "\n";
     
-    my $ac_context = Cairo::Context->create( $surface );
-    $ac_context->set_source_rgb( 0, 0, 255 );
+    my $ac_context     = Cairo::Context->create( $surface );
+    my $power_gradient = Cairo::LinearGradient->create( $total_width / 2, $total_height, $total_width / 2, $total_height / 1.5 );
+    
+    $power_gradient->add_color_stop_rgba( 0  , 0, 0, 1, 1 );
+    $power_gradient->add_color_stop_rgba( 0.5, 0, 1, 0, 1 );
+    $power_gradient->add_color_stop_rgba( 1  , 1, 1, 0, 1 );
+    $ac_context->set_source( $power_gradient );
+    
     $ac_context->set_line_width( 3 );
     $ac_context->move_to( 0, $y_segment * 2 ) ;
     
@@ -441,26 +462,31 @@ sub render_graph {
     
     my $counter = 0;
     
-    my ( $min_reading_datetime, $max_reading_datetime );
+#    my ( $min_reading_datetime, $max_reading_datetime );
     
     for my $reading_datetime ( sort keys %{$self->{daily_stats}} ) {
         
-        my $value = $self->{daily_stats}->{ $reading_datetime };
+        # First, figure out the X value of this data
+        my ( $hour, $min, $sec );
         
-        if ( ! $min_reading_datetime ) {
-            $min_reading_datetime = $reading_datetime;
+        if ( $reading_datetime =~ /\d{4}-\d{2}-\d{2}\s(\d{2}):(\d{2}):(\d{2})/ ) {
+            ( $hour, $min, $sec ) = ( $1, $2, $3 );
+        } else {
+            die( "Failed to parse datetime: [$reading_datetime]" );
         }
         
-        $max_reading_datetime = $reading_datetime;
+        my $secs_past_earliest = ( ( $hour * 3600 ) + ( $min * 60 ) + $sec ) - $earliest_sec;
         
-        # For the current graph, we just trace our ceiling, and at the end, close it off
-        # along the bottom of the graph area
-        
-        my $this_x = $counter * $reading_scale;
+        my $this_x = $secs_past_earliest * $sec_scale;
         
         # For Y values, 0 is the top of the area
         # So the formula for calculating the Y value is:
         #  BASE OF GRAPH - HEIGHT
+        
+        my $value = $self->{daily_stats}->{ $reading_datetime };
+        
+        # For the current bar, we just trace our ceiling, and at the end, close it off
+        # along the bottom of the graph area
         
         #############
         # temperature
@@ -495,38 +521,70 @@ sub render_graph {
     $ac_context->line_to( 0, $y_segment * 2 );
     $ac_context->fill;
     
-    my $min_hour = substr( $min_reading_datetime, 11, 2 );
-    my $max_hour = substr( $max_reading_datetime, 11, 2 );
+    # - - - - - - - - - -
+    # done with graphing
+    # - - - - - - - - - -
     
-    my $min_sec = ( substr( $min_reading_datetime, 11, 2 ) * 3600 ) + ( substr( $min_reading_datetime, 14, 2 ) * 60 ) + substr( $min_reading_datetime, 17, 2 );
-    my $max_sec = ( substr( $max_reading_datetime, 11, 2 ) * 3600 ) + ( substr( $max_reading_datetime, 14, 2 ) * 60 ) + substr( $max_reading_datetime, 17, 2 );
+    # Now render the X & Y axis labels and partitioning lines
+    my $line_context = Cairo::Context->create( $surface );
+    $line_context->set_source_rgba( 1, 1, 1, 0.2 );
+    $line_context->set_line_width( 3 );
     
-    if ( $max_sec && $min_sec ) {
+    for ( my $hour = $self->{globals}->{Graph_Min_Hour}; $hour <= $self->{globals}->{Graph_Max_Hour}; $hour++ ) {
         
-        my $sec_scale = $total_width / ( $max_sec - $min_sec );
+        my $secs_past_earliest = ( $hour * 3600 ) - $earliest_sec;
+        my $this_x = $secs_past_earliest * $sec_scale;
         
-        $cairo_context->set_source_rgb( 255, 255, 255 );
+        # For the text label, the X value we pass into $self->draw_graph_text is where it starts rendering text.
+        # We want the text centered around $this_x ... which is different for 1 & 2 digit numbers ...
+        my $label_x_offset = $hour < 10 ? -3 : -8;
         
-        for ( my $h = $min_hour; $h < $max_hour + 1; $h++ ) {
-            my $x = ( ( $h * 3600 ) - $min_sec ) * $sec_scale;
-            $self->draw_graph_text( $cairo_context, $h, 0, $x, $total_height - 20 );
-        }
+        $self->draw_graph_text( $cairo_context, $hour, 0, $this_x + $label_x_offset, $total_height - 20 );
+        
+        # white line
+#        $cairo_context->set_source_rgb( 255, 255, 255 );
+#        $cairo_context->rectangle( $this_x, $total_height, 5, 0 );
+#        $cairo_context->fill;
+
+        $line_context->move_to( $this_x, $total_height - 23 );
+        $line_context->line_to( $this_x, 0 );
+        $line_context->line_to( $this_x + 1, 0);
+        $line_context->line_to( $this_x + 1, $total_height - 23 );
+        $line_context->line_to( $this_x, $total_height - 23 );
+        $line_context->fill;
         
     }
+    
+    $cairo_context->set_source_rgb( 255, 255, 255 );    
     
     # temp scale
     print "Rendering HEAT axis ticks ...\n";
     
     my $tick_increment = $self->{max_heat_sink_temperature} / 4;
     foreach my $tick_no ( 1, 2, 3, 4 ) {
+        
         my $this_tick_value = $tick_no * $tick_increment;
+        my $y = ( $y_segment * 1 ) - ( $tick_no * $tick_increment * $temperature_y_scale );
+        
+        # For the text, the $y that we pass into $self->draw_graph_text
+        # is the TOP ( lower value ) that the text can occupy
+        my $label_y_offset = -8;
+        
         $self->draw_graph_text(
             $cairo_context
           , $tick_no * $tick_increment
           , 0
           , 0
-          , ( $y_segment * 1 ) - ( $tick_no * $tick_increment * $temperature_y_scale )
+          , $y + $label_y_offset
         );
+        
+        $line_context->move_to( 30, $y );
+        $line_context->line_to( $total_width, $y );
+        $line_context->line_to( $total_width, $y - 1 );
+        $line_context->line_to( 30, $y - 1 );
+        $line_context->line_to( 30, $y );
+        $line_context->fill;
+        
     }
     
     # kw scale
@@ -534,14 +592,29 @@ sub render_graph {
     
     $tick_increment = $self->{max_ac_power} / 4;
     foreach my $tick_no ( 1, 2, 3, 4 ) {
+        
         my $this_tick_value = $tick_no * $tick_increment;
+        my $y = ( $y_segment * 2 ) - ( $tick_no * $tick_increment * $ac_power_y_scale );
+        
+        # For the text, the $y that we pass into $self->draw_graph_text
+        # is the TOP ( lower value ) that the text can occupy
+        my $label_y_offset = -8;
+        
         $self->draw_graph_text(
             $cairo_context
           , $tick_no * $tick_increment
           , 0
           , 0
-          , ( $y_segment * 2 ) - ( $tick_no * $tick_increment * $ac_power_y_scale )
+          , $y + $label_y_offset
         );
+        
+        $line_context->move_to( 30, $y );
+        $line_context->line_to( $total_width, $y );
+        $line_context->line_to( $total_width, $y - 1 );
+        $line_context->line_to( 30, $y - 1 );
+        $line_context->line_to( 30, $y );
+        $line_context->fill;
+        
     }
     
 }
@@ -724,7 +797,13 @@ sub on_SaveConfig_clicked {
     $self->{globals}->{config_manager}->simpleSet( "APIKey", $self->{builder}->get_object( "APIKey" )->get_text );
     $self->{globals}->{config_manager}->simpleSet( "SYS_ID", $self->{builder}->get_object( "SYS_ID" )->get_text );
     $self->{globals}->{Panels_Max_Watts} = $self->{builder}->get_object( "Panels_Max_Watts" )->get_text;
+    $self->{globals}->{Graph_Min_Hour} = $self->{builder}->get_object( "Graph_Min_Hour" )->get_text;
+    $self->{globals}->{Graph_Max_Hour} = $self->{builder}->get_object( "Graph_Max_Hour" )->get_text;
     $self->{globals}->{config_manager}->simpleSet( "Panels_Max_Watts", $self->{globals}->{Panels_Max_Watts} );
+    $self->{globals}->{config_manager}->simpleSet( "Graph_Min_Hour", $self->{globals}->{Graph_Min_Hour} );
+    $self->{globals}->{config_manager}->simpleSet( "Graph_Max_Hour", $self->{globals}->{Graph_Max_Hour} );
+    
+    $self->render_graph;
     
 }
 
