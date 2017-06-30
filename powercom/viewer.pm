@@ -106,7 +106,8 @@ sub new {
             dbh             => $self->{globals}->{db}
 #          , read_only       => 1
           , sql             => {
-                                    select          => "reading_datetime, heat_sink_temperature, ac_power / 20, panel_1_voltage, line_current",
+                                    select          => "reading_datetime, heat_sink_temperature, ac_power / 20 as ac_power,"
+                                                     . " panel_1_voltage, line_current",
 #                                    select          => "*"
                                   , from            => "readings"
                                   , where           => "0=1"
@@ -331,7 +332,7 @@ sub on_daily_summary_select {
     my $day = $self->{daily_summary}->get_column_value( "reading_date" );
     
     if ( $self->{reading_stats_day} ne $day ) {
-        $self->{readings}->query( "where reading_datetime like '$day%'" );
+        $self->{readings}->query( { where   => "reading_datetime like '$day%'" } );
     }
     
     $self->{reading_stats_day} = $day;
@@ -443,7 +444,7 @@ sub render_graph {
     $heat_context->set_source( $heat_gradient );
     
     $heat_context->set_line_width( 3 );
-    $heat_context->move_to( 0, $y_segment * 1 ) ;
+#    $heat_context->move_to( 0, $y_segment * 1 ) ;
     
     print "HEAT BASE: " . $y_segment . "\n";
     
@@ -456,13 +457,14 @@ sub render_graph {
     $ac_context->set_source( $power_gradient );
     
     $ac_context->set_line_width( 3 );
-    $ac_context->move_to( 0, $y_segment * 2 ) ;
+#    $ac_context->move_to( 0, $y_segment * 2 ) ;
     
     print "POWER BASE: " . $y_segment * 2 . "\n";
     
     my $counter = 0;
     
 #    my ( $min_reading_datetime, $max_reading_datetime );
+    my ( $first_x , $last_x ); # memory for where to start and close off the sides of the graph
     
     for my $reading_datetime ( sort keys %{$self->{daily_stats}} ) {
         
@@ -478,6 +480,12 @@ sub render_graph {
         my $secs_past_earliest = ( ( $hour * 3600 ) + ( $min * 60 ) + $sec ) - $earliest_sec;
         
         my $this_x = $secs_past_earliest * $sec_scale;
+        
+        if ( ! $first_x ) {
+            $heat_context->move_to( $this_x, $y_segment * 1 );
+            $ac_context->move_to( $this_x, $y_segment * 2 );
+            $first_x = $this_x;
+        }
         
         # For Y values, 0 is the top of the area
         # So the formula for calculating the Y value is:
@@ -502,7 +510,7 @@ sub render_graph {
         $this_y = ( $y_segment * 2 ) - ( $value->{ac_power} * $ac_power_y_scale );
         #print "POWER this y: $this_y\n";
         $ac_context->line_to( $this_x, $this_y );
-        
+        $last_x = $this_x;
         $counter ++;
         
     }
@@ -511,13 +519,15 @@ sub render_graph {
     
     print "Closing off HEAT graph, to Y level: [" . $y_segment * 1 . "]\n";
     
-    $heat_context->line_to( $total_width, $y_segment * 1 );
+#    $heat_context->line_to( $total_width, $y_segment * 1 );
+    $heat_context->line_to( $last_x, $y_segment * 1 );
     $heat_context->line_to( 0, $y_segment * 1 );
     $heat_context->fill;
     
     print "Closing off POWER graph, to Y level: [" . $y_segment * 2 . "]\n";
     
-    $ac_context->line_to( $total_width, $y_segment * 2 );
+#    $ac_context->line_to( $total_width, $y_segment * 2 );
+    $ac_context->line_to( $last_x, $y_segment * 2 );
     $ac_context->line_to( 0, $y_segment * 2 );
     $ac_context->fill;
     
