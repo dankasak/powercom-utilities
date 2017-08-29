@@ -63,8 +63,6 @@ $globals->{dbh} = DBI->connect(
     }
 ) || die( $DBI::errstr );
 
-die( "done" );
-
 my $config_manager = config_manager->new( $globals );
 
 my $powercom_test_path = $config_manager->simpleGet( "powercom_test_path" );
