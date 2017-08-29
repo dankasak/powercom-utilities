@@ -1,0 +1,4 @@
+This is the original schema, from when I was using SQLite.
+It seemed like an easy option at the time ( zero config
+for users ), but I've changed my mind - just install
+Postgres and use that schema.

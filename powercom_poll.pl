@@ -40,47 +40,30 @@ $globals->{db} = DBI->connect(
     ""
 ) || die $DBI::errstr;
 
+my $auth_sth = $globals->{db}->prepare(
+    "select * from connections where ConnectionName = 'main'"
+) || die( $globals->{db}->errstr );
+
+$auth_sth->execute()
+    || die( $auth_sth->errstr );
+
+my $auth_hash = $auth_sth->fetchrow_hashref;
+
+if ( ! $auth_hash ) {
+    die( "Didn't find a configured connection ( name = 'main' ) to write into ... we need a Postgres connection set up" );
+}
+
+$globals->{dbh} = DBI->connect(
+    'dbi:Pg:dbname=' . $auth_hash->{Database} . ';host=' . $auth_hash->{Host} . ';port=' . $auth_hash->{Port}
+  , $auth_hash->{Username}
+  , $auth_hash->{Password}
+  , {
+        RaiseError    => 0
+      , AutoCommit    => 1
+    }
+) || die( $DBI::errstr );
+
 my $config_manager = config_manager->new( $globals );
-
-$globals->{db}->do(
-    "create table if not exists readings (\n"
-  . "    id                       integer primary key autoincrement\n"
-  . "  , serial_number            number\n"
-  . "  , reading_datetime         datetime\n"
-  . "  , heat_sink_temperature    number\n"
-  . "  , panel_1_voltage          number\n"
-  . "  , panel_1_dc_voltage       number\n"
-  . "  , working_hours            number\n"
-  . "  , operating_mode           text\n"
-  . "  , tmp_f_value              number\n"
-  . "  , pv_1_f_value             number\n"
-  . "  , gfci_f_value             number\n"
-  . "  , fault_code_high          number\n"
-  . "  , fault_code_low           number\n"
-  . "  , line_current             number\n"
-  . "  , line_voltage             number\n"
-  . "  , ac_frequency             number\n"
-  . "  , ac_power                 number\n"
-  . "  , zac                      number\n"
-  . "  , accumulated_energy       number\n"
-  . "  , gfci_f_value_volts       number\n"
-  . "  , gfci_f_value_hz          number\n"
-  . "  , gz_f_value_ohm           number\n"
-  . ")"
-);
-
-$globals->{db}->do(
-    "create table if not exists daily_summary (\n"
-  . "    id                           integer primary key autoincrement\n"
-  . "  , reading_date                 date\n"
-  . "  , max_heat_sink_temperature    number\n"
-  . "  , max_ac_power                 number\n"
-  . "  , total_ac_power               number\n"
-  . "  , weather_condition            text\n"
-  . "  , uploaded                     number\n"
-  . "  , upload_status                text\n"
-  . ")"
-);
 
 my $powercom_test_path = $config_manager->simpleGet( "powercom_test_path" );
 
@@ -252,13 +235,13 @@ sub parse_powercom_output {
     
     if ( $accumulated_energy ) {
         
-        my $insert_sth = $globals->{db}->prepare(
+        my $insert_sth = $globals->{dbh}->prepare(
             "insert into readings ( serial_number, reading_datetime, heat_sink_temperature, panel_1_voltage\n"
           . "  , panel_1_dc_voltage, working_hours, operating_mode, tmp_f_value, pv_1_f_value, gfci_f_value\n"
           . "  , fault_code_high, fault_code_low, line_current, line_voltage, ac_frequency, ac_power\n"
           . "  , zac, accumulated_energy, gfci_f_value_volts, gfci_f_value_hz, gz_f_value_ohm ) values (\n"
           . " ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? )"
-        ) || die( $globals->{db}->errstr );
+        ) || die( $globals->{dbh}->errstr );
         
         $insert_sth->execute(
             $serial_number, $reading_datetime, $heat_sink_temperature, $panel_1_voltage

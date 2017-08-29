@@ -1,6 +1,8 @@
 package powercom::dialog;
 
 use strict;
+use warnings;
+
 use POSIX;
 
 
@@ -26,7 +28,7 @@ sub new {
         'GTK_BUTTONS_OK'
     );
     
-    $dialog->set_markup( $options->{text} );
+    $dialog->set_markup( $options->{text} ? $options->{text} : $options->{markup} );
         
     $dialog->show_all;
 

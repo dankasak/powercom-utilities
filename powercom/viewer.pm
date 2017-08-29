@@ -13,6 +13,8 @@ use Pango;
 use Data::Dumper;
 use DateTime;
 
+use Glib qw | TRUE FALSE |;
+
 sub new {
     
     my ( $class, $globals ) = @_;
@@ -32,8 +34,6 @@ sub new {
     
     $self->{progress} = $self->{builder}->get_object( "ProgressBar" );
     
-    $self->set_outstanding_stats;
-    
     $self->{builder}->get_object( "APIKey" )->set_text( $self->{globals}->{config_manager}->simpleGet( "APIKey" ) || "" );
     $self->{builder}->get_object( "SYS_ID" )->set_text( $self->{globals}->{config_manager}->simpleGet( "SYS_ID" ) || "" );
     
@@ -45,284 +45,238 @@ sub new {
     $self->{globals}->{Graph_Max_Hour} = defined $self->{globals}->{config_manager}->simpleGet( "Graph_Max_Hour" ) ? $self->{globals}->{config_manager}->simpleGet( "Graph_Max_Hour" ) : 23;
     $self->{builder}->get_object( "Graph_Max_Hour" )->set_text( $self->{globals}->{Graph_Max_Hour} );
     
-    $self->{daily_summary} = Gtk3::Ex::DBI::Datasheet->new(
+    $self->create_daily_summary_datasheet;
+
+    $self->{sources_datasheet} = Gtk3::Ex::DBI::Datasheet->new(
         {
-            dbh             => $self->{globals}->{db}
-          , sql             => {
-                                    select      => "*"
-                                  , from        => "daily_summary"
-                                  , order_by    => "reading_date desc"
+            dbh             => $self->{globals}->{dbh}
+        ,   sql             => {
+                                  select          => "*",
+                                , from            => "sources"
+                                , order_by        => "source"
                                }
-          , fields          => [
-                                    {
-                                        name        => "id"
-                                      , renderer    => "hidden"
-                                    }
-                                  , {
-                                        name        => "date"
-                                      , x_absolute  => 80
-                                      , read_only   => 1
-                                    }
-                                  , {
-                                        name        => "max heat sink temp"
-                                      , x_percent   => 25
-                                      , read_only   => 1
-                                    }
-                                  , {
-                                        name        => "max watts"
-                                      , x_percent   => 25
-                                      , read_only   => 1
-                                    }
-                                  , {
-                                        name        => "total kWh"
-                                      , x_percent   => 25
-                                      , number      => {
-                                                           decimal_places  => 1
-                                                       }
-                                    }
-                                  , {
-                                        name        => "weather condition"
-                                      , x_percent   => 25
-                                    }
-                                  , {
-                                        name        => "uploaded"
-                                      , x_absolute  => 80
-                                      , renderer    => "toggle"
-                                      , read_only   => 1
-                                    }
-                                  , {
-                                        name        => "upload_status"
-                                      , renderer    => "hidden"
-                                    }
-                               ]
-#          , treeview        => $self->{builder}->get_object( "daily_summary_datasheet" )
-          , vbox            => $self->{builder}->get_object( "daily_summary_box" ) 
-          , on_row_select   => sub { $self->on_daily_summary_select( @_ ) }
+            , vbox            => $self->{builder}->get_object( "sources_box" )
+            , auto_tools_box  => 1
+            , fields          => [
+                {
+                      name        => "source"
+                    , x_percent   => 10
+                }
+              , {
+                      name        => "dataset_sql"
+                    , x_percent   => 25
+                }
+              , {
+                      name        => "summary_sql"
+                    , x_percent   => 25
+                }
+              , {
+                      name        => "display_bits"
+                    , x_percent   => 10
+                }
+              , {
+                      name        => "colour"
+                    , renderer    => "image"
+                    , x_percent   => 10
+                    , custom_render_functions  => [ sub { $self->colour_cell_renderer( @_ ) } ]
+                }
+              , {
+                      name        => "sort_order"
+                    , x_absolute  => 100
+                }
+              , {
+                      name        => "multiplier"
+                    , x_absolute  => 100
+                }
+            ]
         }
     );
-    
-    $self->{readings} = Gtk3::Ex::DBI::Datasheet->new(
-        {
-            dbh             => $self->{globals}->{db}
-#          , read_only       => 1
-          , sql             => {
-                                    select          => "reading_datetime, heat_sink_temperature, ac_power / 20 as ac_power,"
-                                                     . " panel_1_voltage, line_current",
-#                                    select          => "*"
-                                  , from            => "readings"
-                                  , where           => "0=1"
-                                  , order_by        => "id"
-                               }
-#          , treeview        => $self->{builder}->get_object( "readings_datasheet" )
-          , vbox            => $self->{builder}->get_object( "readings_box" )
-          , fields          => [
-                                    {
-                                        name        => "reading_datetime"
-                                      , x_percent   => 20
-                                    }
-                                  , {
-                                        name        => "heat_sink_temperature"
-                                      , x_percent   => 20
-                                    }
-                                  , {
-                                        name        => "ac_power"
-                                      , x_percent   => 20
-                                      , renderer    => "progress"
-                                    }
-                                  , {
-                                        name        => "panel_1_voltage"
-                                      , x_percent   => 20
-                                    }
-                                  , {
-                                        name        => "line_current"
-                                      , x_percent   => 20
-                                    }
-                               ]
-        }
-    );
-    
+
+    my $picker = Gtk3::ColorButton->new();
+    $picker->set_label( 'Choose colour ...' );
+    $picker->signal_connect( 'color-set', sub { $self->on_select_colour( @_ ) } );
+    $self->{sources_datasheet}->{recordset_tools_box}->pack_start( $picker, TRUE, TRUE, 2 );
+    $self->{sources_datasheet}->{recordset_tools_box}->show_all;
+
+    $self->create_source_datasheets;
+
     $self->{builder}->get_object( "pvoutput_info" )->get_buffer->set_text(
         "PV Output is a website for uploading and comparing your generation statistics.\n"
       . "Create an account at http://www.pvoutput.org/ and enter your details here."
     );
     
-    Glib::Timeout->add( 6000, sub { $self->on_daily_summary_select } );
-    
     return $self;
-    
+
 }
 
-sub set_outstanding_stats {
-    
+sub create_daily_summary_datasheet {
+
     my $self = shift;
-    
-    my $sth = $self->{globals}->{db}->prepare(
-        "select\n"
-      . "    substr(reading_datetime, 1, 10) as reading_date\n"
-      . "from\n"
-      . "    readings left join daily_summary\n"
-      . "        on substr(readings.reading_datetime, 1, 10 ) = daily_summary.reading_date\n"
-      . "where\n"
-      . "    daily_summary.reading_date is null\n"
-      . "group by substr(reading_datetime, 1, 10)"
-    ) || die( $self->{globals}->{db}->errstr );
-    
+
+    if ( exists $self->{daily_summary} ) {
+        $self->{daily_summary}->destroy;
+    }
+
+    my $summary_sources = $self->{globals}->{dbh}->select(
+        "select * from sources order by ( case when source = 'production' then 0 else 1 end )"
+    );
+
+    my $sql = "select\n    *\nfrom";
+
+    my $fields;
+    my $num_of_source = @$summary_sources;
+
+    foreach my $source ( @{$summary_sources} ) {
+
+        if ( $source->{source} ne 'production' ) {
+
+            $sql .= "\nleft join    " . $source->{summary_sql} . " " . $source->{source} . " on " . $source->{source} . ".reading_date = production.reading_date";
+
+            push
+                @{$fields}
+              , {
+                    name       => $source->{summary_sql} . " reading date"
+                  , renderer   => "hidden"
+                }
+              , {
+                    name       => $source->{source} . " kWh"
+                  , x_percent  => 100 / $num_of_source
+                  , renderer   => "progress"
+                  , custom_render_functions => [ sub { $self->summary_progress_renderer( @_ ) } ]
+                };
+
+        } else {
+
+            $sql .= "\n             " . $source->{summary_sql} . " " . $source->{source};
+
+            push
+                @{$fields}
+              , {
+                    name       => "reading date"
+                  , x_absolute => 120
+                }
+              , {
+                    name       => $source->{source} . " kWh"
+                  , x_percent  => 100 / $num_of_source
+                  , renderer   => "progress"
+                  , custom_render_functions => [ sub { $self->summary_progress_renderer( @_ ) } ]
+                };
+
+        }
+
+    }
+
+    $sql .= "\norder by\n    production.reading_date desc";
+
+    print "\n\n$sql\n\n";
+
+    $self->{daily_summary} = Gtk3::Ex::DBI::Datasheet->new(
+        {
+            dbh             => $self->{globals}->{dbh}
+          , sql             => {
+                                   pass_through => $sql
+            }
+          , fields          => $fields
+          , vbox            => $self->{builder}->get_object( "daily_summary_box" )
+          , on_row_select   => sub { $self->on_daily_summary_select( @_ ) }
+        }
+    );
+
+}
+
+sub summary_progress_renderer {
+
+    my ( $self , $column, $cell, $model, $iter ) = @_;
+
+    print "column: $cell->{column}\n";
+
+    my $watt_hours = $model->get( $iter, $cell->{column} );
+
+    print " watt hours: " . $watt_hours . "\n";
+
+    my $wa_percent = $watt_hours / 20000 * 100;
+
+    $cell->set( value => $wa_percent );
+    $cell->set( text  => ( $watt_hours ? ( $self->comma_separated( $watt_hours / 1000 ) ) : "" ) );
+
+}
+
+sub on_select_colour {
+
+    my ( $self, $picker ) = @_;
+
+    $self->{sources_datasheet}->set_column_value( "colour", $picker->get_rgba->to_string );
+
+}
+
+sub colour_cell_renderer {
+
+    my ( $self, $column, $renderer, $model, $iter ) = @_;
+
+    my $colour_string = $model->get( $iter, 5 ); # TODO: replace with column number lookup
+
+    my ( $r, $g, $b );
+    my $fillcolour;
+
+    if ( $colour_string =~ /rgb\((.*),(.*),(.*)\)/ ) {
+        ( $r, $g, $b ) = ( $1 / 255, $2 / 255, $3 / 255 );
+        $fillcolour = $r | $g | $b | 255;
+    } else {
+        die( "Failed to parse colour string: $colour_string" );
+    }
+
+    my $rgba = Gtk3::Gdk::RGBA->new( $r, $g, $b, 1 );
+
+    my $pixbuf = Gtk3::Gdk::Pixbuf->new( 'GDK_COLORSPACE_RGB', 1, 8, 16, 16 );
+    $pixbuf->fill( $rgba );
+
+    $renderer->set( 'pixbuf' => $pixbuf );
+
+}
+
+sub get_sources {
+
+    my ( $self ) = @_;
+
+    my $sth = $self->{globals}->{dbh}->prepare(
+        "select * from sources order by source "
+    ) || die( $self->{globals}->{dbh}->errstr );
+
     $sth->execute()
         || die( $sth->errstr );
-    
+
+    my $return = $sth->fetchall_arrayref;
+
+    foreach my $row ( @{$return} ) {
+        $self->{stat_types}->{ $row->{source} }->{colour} = $row->{colour};
+        $self->{stat_types}->{ $row->{source} }->{multiplier} = $row->{multiplier};
+    }
+
+    return $return;
+
+}
+
+sub create_source_datasheets {
+
+    my $self = shift;
+
+    my $sth = $self->{globals}->{dbh}->prepare(
+        "select * from sources order by source "
+    ) || die( $self->{globals}->{dbh}->errstr );
+
+    $sth->execute()
+        || die( $sth->errstr );
+
+    $self->{sources_notebook} = $self->{builder}->get_object( 'sources_notebook' );
+
     while ( my $row = $sth->fetchrow_hashref ) {
-        $self->set_stats_for_day( $row->{reading_date} );
+        $self->{stat_types}->{ $row->{source} }->{dataset_sql} = $row->{dataset_sql};
+        $self->{stat_types}->{ $row->{source} }->{summary_sql} = $row->{summary_sql};
+        $self->{stat_types}->{ $row->{source} }->{colour} = $row->{colour};
+        $self->{stat_types}->{ $row->{source} }->{multiplier} = $row->{multiplier};
     }
-    
-}
 
-sub set_stats_for_day {
-    
-    my ( $self, $day ) = @_;
-    
-    $self->{progress}->set_text( "Summarising outstanding data for [$day] ..." );
-    $self->{progress}->pulse;
-    Gtk3::main_iteration() while ( Gtk3::events_pending() );
-    
-    $self->summarise_daily_sth->execute( $day )
-        || die( $self->summarise_daily_sth->errstr );
-    
-    my $row = $self->summarise_daily_sth->fetchrow_hashref;
-    
-    if ( ! $row ) {
-        
-        die( "Didn't get a summary row back for day [$day]" );
-        
-    } else {
-        
-        if ( $self->check_if_summary_record_exists( $day ) ) {
-            
-            $self->update_daily_stats_sth->execute(
-                $row->{max_heatsink_temperature}
-              , $row->{max_ac_power}
-              , $row->{total_accumulated_energy}
-              , $day
-            ) || die( $self->update_daily_stats_sth->errstr );
-            
-        } else {
-            
-            $self->insert_daily_stats_sth->execute(
-                $row->{max_heatsink_temperature}
-              , $row->{max_ac_power}
-              , $row->{total_accumulated_energy}
-              , $day
-            ) || die( $self->insert_daily_stats_sth->errstr );
-            
-        }
-        
-    }
-    
-    $self->{progress}->set_text( "" );
-    $self->{progress}->set_fraction( 0 );
-    
-}
 
-sub check_if_summary_record_exists {
-    
-    my ( $self, $day ) = @_;
-    
-    if ( ! $self->{check_if_summary_record_exists_sth} ) {
-        
-        $self->{check_if_summary_record_exists_sth} = $self->{globals}->{db}->prepare(
-            "select\n"
-          . "    reading_date\n"
-          . "from\n"
-          . "    daily_summary\n"
-          . "where\n"
-          . "    reading_date = ?"
-        ) || die( $self->{globals}->{db}->errstr );
-        
-    }
-    
-    $self->{check_if_summary_record_exists_sth}->execute( $day )
-        || die( $self->{check_if_summary_record_exists_sth}->errstr );
-    
-    my $row = $self->{check_if_summary_record_exists_sth}->fetchrow_arrayref;
-    
-    if ( $row ) {
-        return 1;
-    } else {
-        return 0;
-    }
-    
-}
-
-sub summarise_daily_sth {
-    
-    my ( $self, $day ) = @_;
-    
-    if ( ! $self->{summarise_daily_sth} ) {
-        $self->{summarise_daily_sth} = $self->{globals}->{db}->prepare(
-            "select\n"
-          . "    max(heat_sink_temperature) as max_heatsink_temperature\n"
-          . "  , max(ac_power) as max_ac_power\n"
-          . "  , max(accumulated_energy) - min(accumulated_energy) as total_accumulated_energy\n"
-          . "from\n"
-          . "    readings\n"
-          . "where\n"
-          . "    substr(reading_datetime, 1, 10) = ?\n"
-          . "group by\n"
-          . "    substr(reading_datetime, 1, 10 )"
-        ) || die( $self->{globals}->{db}->errstr );
-        
-    }
-    
-    return $self->{summarise_daily_sth};
-    
-}
-
-sub insert_daily_stats_sth {
-    
-    my $self = shift;
-    
-    if ( ! $self->{insert_daily_stats_sth} ) {
-        
-        $self->{insert_daily_stats_sth} = $self->{globals}->{db}->prepare(
-            "insert into daily_summary(\n"
-          . "    max_heat_sink_temperature\n"
-          . "  , max_ac_power\n"
-          . "  , total_ac_power\n"
-          . "  , reading_date\n"
-          . "  , uploaded\n"
-          . ") values (\n"
-          . "    ?\n"
-          . "  , ?\n"
-          . "  , ?\n"
-          . "  , ?\n"
-          . "  , 0\n"
-          . ")"
-        ) || die( $self->{globals}->{db}->errstr );
-        
-    }
-    
-    return $self->{insert_daily_stats_sth};
-    
-}
-
-sub update_daily_stats_sth {
-    
-    my $self = shift;
-    
-    if ( ! $self->{update_daily_stats_sth} ) {
-        
-        $self->{update_daily_stats_sth} = $self->{globals}->{db}->prepare(
-            "update daily_summary set\n"
-          . "    max_heat_sink_temperature = ?\n"
-          . "  , max_ac_power = ?\n"
-          . "  , total_ac_power = ?\n"
-          . "where\n"
-          . "    reading_date = ?"
-        ) || die( $self->{globals}->{db}->errstr );
-        
-    }
-    
-    return $self->{update_daily_stats_sth};
-    
 }
 
 sub on_daily_summary_select {
@@ -330,10 +284,6 @@ sub on_daily_summary_select {
     my $self = shift;
     
     my $day = $self->{daily_summary}->get_column_value( "reading_date" );
-    
-    if ( $self->{reading_stats_day} ne $day ) {
-        $self->{readings}->query( { where   => "reading_datetime like '$day%'" } );
-    }
     
     $self->{reading_stats_day} = $day;
     
@@ -349,52 +299,63 @@ sub load_stats_for_date {
     
     my ( $self, $date ) = @_;
     
-    my $sth = $self->{globals}->{db}->prepare(
-        "select\n"
-      . "    reading_datetime\n"
-      . "  , heat_sink_temperature\n"
-      . "  , ac_power\n"
-      . "  , accumulated_energy\n"
-      . "from\n"
-      . "    readings\n"
-      . "where\n"
-      . "    reading_datetime like '" . $date . "%'"
-    ) || die( $self->{globals}->{db}->errstr );
-    
-    $sth->execute()
-        || die( $sth->errstr );
-    
-    $self->{daily_stats} = $sth->fetchall_hashref( 'reading_datetime' );
-    $self->{no_of_readings} = scalar keys %{$self->{daily_stats}};
-    
-    foreach my $key ( sort keys %{$self->{daily_stats}} ) {
-        
-        my $value = $self->{daily_stats}->{ $key };
-        
-        if ( $value->{heat_sink_temperature} > $self->{max_heat_sink_temperature} ) {
-            $self->{max_heat_sink_temperature} = $value->{heat_sink_temperature};
-        }
-        
-        if ( $value->{ac_power} > $self->{max_ac_power} ) {
-            $self->{max_ac_power} = $value->{ac_power};
-        }
-        
-    }
-    
     $self->{max_ac_power} = $self->{globals}->{Panels_Max_Watts};
-    
+
+    foreach my $stat_type ( keys %{$self->{stat_types}} ) {
+
+        my $sth = $self->{globals}->{dbh}->prepare(
+            "select reading_datetime, watts * " . $self->{stat_types}->{ $stat_type }->{multiplier} ." as watt_hours\n"
+          . "from " . $self->{stat_types}->{ $stat_type }->{dataset_sql} . "\n"
+          . "where reading_datetime between ?::DATE and ?::DATE + interval '1 day'"
+        ) || die( $self->{globals}->{dbh}->errstr );
+
+        $sth->execute( $date, $date )
+            || die( $sth->errstr );
+
+        $self->{stat_types}->{ $stat_type }->{stats} = $sth->fetchall_hashref( 'reading_datetime' );
+
+    }
+
     if ( $self->{drawing_area} ) {
         $self->{drawing_area}->destroy;
+        undef $self->{motion_events_setup};
+        # TODO: disconnect mouse signal
     }
     
     $self->{drawing_area} = Gtk3::DrawingArea->new;
+
+    if ( ! $self->{motion_events_setup} ) {
+
+        $self->{drawing_area}->add_events(0x004|0x100|0x200); # TODO - find constants for these - they're events like 'mouse mpve'
+
+        $self->{drawing_area}->signal_connect( 'motion_notify_event', sub { $self->handle_graph_mouse_move( @_ ) } );
+
+        $self->{motion_events_setup} = 1;
+
+    }
 
     $self->{builder}->get_object( "graph_box" )->pack_start(
         $self->{drawing_area}, 1, 1, 0 );
     
     $self->{drawing_area}->show;
     $self->{drawing_area}->signal_connect( draw => sub { $self->render_graph( @_ ) } );
-    
+
+}
+
+sub handle_graph_mouse_move {
+
+    my ( $self, $widget, $event ) = @_;
+
+    $self->{mouse_x} = $event->x;
+    $self->{mouse_y} = $event->y;
+
+    print "queuing mouse position x: " . $self->{mouse_x} . " y: " . $self->{mouse_y} . "\n";
+
+    if ( ! $self->{mouse_event_queued} ) {
+        $self->{mouse_event_queued} = 1;
+        $self->{drawing_area}->queue_draw;
+    }
+
 }
 
 sub render_graph {
@@ -423,9 +384,10 @@ sub render_graph {
     # We also want a bottom buffer of 20 for the legend
     my $graph_area_height = $total_height; # - 20;
     
-    use constant  NO_OF_GRAPHS  => 2;
-    
-    my $temperature_y_scale    = $graph_area_height / ( $self->{max_heat_sink_temperature} ) / NO_OF_GRAPHS;
+    use constant  NO_OF_GRAPHS  => 1;
+    use constant  GRAPH_NO      => 1;
+
+#    my $temperature_y_scale    = $graph_area_height / ( $self->{max_heat_sink_temperature} ) / NO_OF_GRAPHS;
     my $ac_power_y_scale       = $graph_area_height / ( $self->{max_ac_power} ) / NO_OF_GRAPHS;
     
     my $y_segment              = $graph_area_height / NO_OF_GRAPHS;
@@ -433,104 +395,17 @@ sub render_graph {
     $cairo_context->set_source_rgb( 0, 255, 168 );
     $cairo_context->set_line_width( 3 );
     $cairo_context->move_to( 0, $graph_area_height );
-    
-    my $heat_context  = Cairo::Context->create( $surface );
-    my $heat_gradient = Cairo::LinearGradient->create( $total_width / 2, $total_height / 2 , $total_width / 2, 0 );
 
-    $heat_gradient->add_color_stop_rgba( 0  , 1,   0, 1  , 1 );
-    $heat_gradient->add_color_stop_rgba( 0.5, 1, 0.4, 0.7, 1 );
-    $heat_gradient->add_color_stop_rgba( 1  , 1,   0, 0  , 1 );
-    
-    $heat_context->set_source( $heat_gradient );
-    
-    $heat_context->set_line_width( 3 );
-#    $heat_context->move_to( 0, $y_segment * 1 ) ;
-    
-    print "HEAT BASE: " . $y_segment . "\n";
-    
-    my $ac_context     = Cairo::Context->create( $surface );
-    my $power_gradient = Cairo::LinearGradient->create( $total_width / 2, $total_height, $total_width / 2, $total_height / 1.5 );
-    
-    $power_gradient->add_color_stop_rgba( 0  , 0, 0, 1, 1 );
-    $power_gradient->add_color_stop_rgba( 0.5, 0, 1, 0, 1 );
-    $power_gradient->add_color_stop_rgba( 1  , 1, 1, 0, 1 );
-    $ac_context->set_source( $power_gradient );
-    
-    $ac_context->set_line_width( 3 );
-#    $ac_context->move_to( 0, $y_segment * 2 ) ;
-    
-    print "POWER BASE: " . $y_segment * 2 . "\n";
-    
-    my $counter = 0;
-    
-#    my ( $min_reading_datetime, $max_reading_datetime );
-    my ( $first_x , $last_x ); # memory for where to start and close off the sides of the graph
-    
-    for my $reading_datetime ( sort keys %{$self->{daily_stats}} ) {
-        
-        # First, figure out the X value of this data
-        my ( $hour, $min, $sec );
-        
-        if ( $reading_datetime =~ /\d{4}-\d{2}-\d{2}\s(\d{2}):(\d{2}):(\d{2})/ ) {
-            ( $hour, $min, $sec ) = ( $1, $2, $3 );
-        } else {
-            die( "Failed to parse datetime: [$reading_datetime]" );
-        }
-        
-        my $secs_past_earliest = ( ( $hour * 3600 ) + ( $min * 60 ) + $sec ) - $earliest_sec;
-        
-        my $this_x = $secs_past_earliest * $sec_scale;
-        
-        if ( ! $first_x ) {
-            $heat_context->move_to( $this_x, $y_segment * 1 );
-            $ac_context->move_to( $this_x, $y_segment * 2 );
-            $first_x = $this_x;
-        }
-        
-        # For Y values, 0 is the top of the area
-        # So the formula for calculating the Y value is:
-        #  BASE OF GRAPH - HEIGHT
-        
-        my $value = $self->{daily_stats}->{ $reading_datetime };
-        
-        # For the current bar, we just trace our ceiling, and at the end, close it off
-        # along the bottom of the graph area
-        
-        #############
-        # temperature
-        my $this_y = ( $y_segment * 1 ) - ( $value->{heat_sink_temperature} * $temperature_y_scale );
-        if ( $this_y > $total_height ) {
-            print "WTF?\n";
-            print "TEMP this y: $this_y\n";
-        }
-        $heat_context->line_to( $this_x, $this_y );
-        
-        ##########
-        # ac power
-        $this_y = ( $y_segment * 2 ) - ( $value->{ac_power} * $ac_power_y_scale );
-        #print "POWER this y: $this_y\n";
-        $ac_context->line_to( $this_x, $this_y );
-        $last_x = $this_x;
-        $counter ++;
-        
+    my $sth = $self->{globals}->{dbh}->prepare(
+        "select source from sources order by sort_order"
+    ) || die( $self->{globals}->{dbh}->errstr );
+
+    $sth->execute() || die( $sth->errstr );
+
+    while ( my $sorted_source = $sth->fetchrow_hashref ) {
+        $self->render_graph_series( $widget, $surface, $sorted_source->{source} );
     }
-    
-    print "==================================\n";
-    
-    print "Closing off HEAT graph, to Y level: [" . $y_segment * 1 . "]\n";
-    
-#    $heat_context->line_to( $total_width, $y_segment * 1 );
-    $heat_context->line_to( $last_x, $y_segment * 1 );
-    $heat_context->line_to( 0, $y_segment * 1 );
-    $heat_context->fill;
-    
-    print "Closing off POWER graph, to Y level: [" . $y_segment * 2 . "]\n";
-    
-#    $ac_context->line_to( $total_width, $y_segment * 2 );
-    $ac_context->line_to( $last_x, $y_segment * 2 );
-    $ac_context->line_to( 0, $y_segment * 2 );
-    $ac_context->fill;
-    
+
     # - - - - - - - - - -
     # done with graphing
     # - - - - - - - - - -
@@ -565,46 +440,16 @@ sub render_graph {
         
     }
     
-    $cairo_context->set_source_rgb( 255, 255, 255 );    
-    
-    # temp scale
-    print "Rendering HEAT axis ticks ...\n";
-    
-    my $tick_increment = $self->{max_heat_sink_temperature} / 4;
-    foreach my $tick_no ( 1, 2, 3, 4 ) {
-        
-        my $this_tick_value = $tick_no * $tick_increment;
-        my $y = ( $y_segment * 1 ) - ( $tick_no * $tick_increment * $temperature_y_scale );
-        
-        # For the text, the $y that we pass into $self->draw_graph_text
-        # is the TOP ( lower value ) that the text can occupy
-        my $label_y_offset = -8;
-        
-        $self->draw_graph_text(
-            $cairo_context
-          , $tick_no * $tick_increment
-          , 0
-          , 0
-          , $y + $label_y_offset
-        );
-        
-        $line_context->move_to( 30, $y );
-        $line_context->line_to( $total_width, $y );
-        $line_context->line_to( $total_width, $y - 1 );
-        $line_context->line_to( 30, $y - 1 );
-        $line_context->line_to( 30, $y );
-        $line_context->fill;
-        
-    }
+    $cairo_context->set_source_rgb( 255, 255, 255 );
     
     # kw scale
     print "Rendering POWER axis ticks ...\n";
     
-    $tick_increment = $self->{max_ac_power} / 4;
+    my $tick_increment = $self->{max_ac_power} / 4;
     foreach my $tick_no ( 1, 2, 3, 4 ) {
         
         my $this_tick_value = $tick_no * $tick_increment;
-        my $y = ( $y_segment * 2 ) - ( $tick_no * $tick_increment * $ac_power_y_scale );
+        my $y = ( $y_segment * GRAPH_NO ) - ( $tick_no * $tick_increment * $ac_power_y_scale );
         
         # For the text, the $y that we pass into $self->draw_graph_text
         # is the TOP ( lower value ) that the text can occupy
@@ -626,7 +471,150 @@ sub render_graph {
         $line_context->fill;
         
     }
-    
+
+    if ( $self->{mouse_x} ) {
+
+        $line_context->move_to( $self->{mouse_x}, 0 );
+        $line_context->line_to( $self->{mouse_x}, $total_height - 23 );
+        $line_context->stroke;
+
+        $line_context->move_to( 0, $self->{mouse_y} );
+        $line_context->line_to( $total_width, $self->{mouse_y} );
+        $line_context->stroke;
+
+        $self->{mouse_event_queued} = 0;
+
+    }
+
+}
+
+sub render_graph_series {
+
+    my ( $self, $widget, $surface, $source ) = @_;
+
+    my $total_width  = $widget->get_allocated_width;
+    my $total_height = $widget->get_allocated_height;
+
+    print "==================================\n";
+    print "total height: $total_height\n";
+    print "==================================\n";
+
+    my $earliest_sec        = $self->{globals}->{Graph_Min_Hour} * 3600;
+    my $latest_sec          = $self->{globals}->{Graph_Max_Hour} * 3600;
+    my $sec_scale           = $total_width / ( $latest_sec - $earliest_sec );
+
+    # We also want a bottom buffer of 20 for the legend
+    my $graph_area_height = $total_height; # - 20;
+
+    use constant  NO_OF_GRAPHS  => 1;
+    use constant  GRAPH_NO      => 1;
+
+    my $this_stat_y_scale               = $graph_area_height / ( $self->{max_ac_power} ) / NO_OF_GRAPHS;
+
+    my $y_segment                       = $graph_area_height / NO_OF_GRAPHS;
+
+    my $this_stat_context               = Cairo::Context->create( $surface );
+    my $this_stat_highlight_context     = Cairo::Context->create( $surface );
+
+#    my $this_stat_gradient  = Cairo::LinearGradient->create( $total_width / 2, $total_height, $total_width / 2, $total_height / 1.5 );
+    my $this_stat_gradient  = Cairo::LinearGradient->create( $total_width, $total_height, $total_width, $total_height );
+
+    my $colour_string       = $self->{stat_types}->{ $source }->{colour};
+    my ( $red, $green, $blue, $red_highlight, $green_highlight, $blue_highlight );
+
+    if ( $colour_string =~ /rgb\((.*),(.*),(.*)\)/ ) {
+
+        my ( $red_str , $green_str , $blue_str ) = ( $1 , $2 , $3 );
+
+        # Note that the RGB values we get here ( 0 to 255 ) are NOT what Cairo
+        # wants to deal with. Cairo instead uses ( 0 to 1 ) because consistency is for losers
+
+        # Calculate highlight colours
+        my $highlight_multiplier = 0.2;
+
+        $red_highlight   = ( $red_str   + ( $highlight_multiplier * ( 255 - $red_str   ) ) ) / 255;
+        $green_highlight = ( $green_str + ( $highlight_multiplier * ( 255 - $green_str ) ) ) / 255;
+        $blue_highlight  = ( $blue_str  + ( $highlight_multiplier * ( 255 - $blue_str   ) ) ) / 255;
+
+        ( $red, $green, $blue ) = ( $red_str / 255, $green_str / 255, $blue_str / 255 );
+
+    } else {
+
+        die( "Failed to parse colour string: $colour_string" );
+
+    }
+
+    $this_stat_gradient->add_color_stop_rgba( 0  , 0.0, 0.0, 0.0, 0.8 );
+#    $this_stat_gradient->add_color_stop_rgba( 0.5, 0.3, 0.3, 0.3, 0.5 );
+    $this_stat_gradient->add_color_stop_rgba( 1  , $red, $green, $blue, 0.8 );
+
+    $this_stat_context->set_source( $this_stat_gradient );
+    $this_stat_highlight_context->set_source_rgba( $red_highlight, $green_highlight, $blue_highlight, 0.8 );
+    $this_stat_context->set_line_width( 3 );
+
+    my $stats = $self->{stat_types}->{ $source }->{stats};
+
+    my ( $first_x , $last_x ); # memory for where to start and close off the sides of the graph
+
+    for my $reading_datetime ( sort keys %{$stats} ) {
+
+        # First, figure out the X value of this data
+        my ( $hour, $min, $sec );
+
+        if ( $reading_datetime =~ /\d{4}-\d{2}-\d{2}\s(\d{2}):(\d{2}):(\d{2})/ ) {
+            ( $hour, $min, $sec ) = ( $1, $2, $3 );
+        } else {
+            die( "Failed to parse datetime: [$reading_datetime]" );
+        }
+
+        my $secs_past_earliest = ( ( $hour * 3600 ) + ( $min * 60 ) + $sec ) - $earliest_sec;
+
+        # hack for final ( midnight ) reading - remove
+        if ( $hour eq '00' && $min eq '00' && $sec eq '00' && defined $first_x ) {
+            $hour = 24;
+            $secs_past_earliest = ( ( $hour * 3600 ) + ( $min * 60 ) + $sec ) - $earliest_sec;
+        }
+
+        my $this_x = $secs_past_earliest * $sec_scale;
+
+        if ( ! defined $first_x ) {
+            $this_stat_context->move_to( $this_x, $y_segment * GRAPH_NO );
+            $this_stat_highlight_context->move_to( $this_x, $y_segment * GRAPH_NO );
+            $first_x = $this_x;
+        }
+
+        # For Y values, 0 is the top of the area
+        # So the formula for calculating the Y value is:
+        #  BASE OF GRAPH - HEIGHT
+
+        my $value = $stats->{ $reading_datetime }->{watt_hours};
+
+        # For the current bar, we just trace our ceiling, and at the end, close it off
+        # along the bottom of the graph area
+
+        #############
+        # temperature
+        my $this_y = ( $y_segment * GRAPH_NO ) - ( $value * $this_stat_y_scale );
+        if ( $this_y > $total_height ) {
+            print "WTF?\n";
+            print "this stat y: $this_y\n";
+        }
+        $this_stat_context->line_to( $this_x, $this_y );
+        $this_stat_highlight_context->line_to( $this_x, $this_y );
+
+        $last_x = $this_x;
+
+    }
+
+    print "Closing off [$source] graph, to Y level: [" . $y_segment * GRAPH_NO . "]\n";
+
+    $this_stat_context->line_to( $last_x , $y_segment * GRAPH_NO );
+    $this_stat_highlight_context->line_to( $last_x, $y_segment * GRAPH_NO );
+    $this_stat_context->line_to( 0 , $y_segment * GRAPH_NO );
+
+    $this_stat_context->fill;
+    $this_stat_highlight_context->stroke;
+
 }
 
 sub draw_graph_text {
@@ -803,7 +791,8 @@ sub on_PVOutputTestAPI_clicked {
 sub on_SaveConfig_clicked {
     
     my $self = shift;
-    
+
+    print "saving config\n";
     $self->{globals}->{config_manager}->simpleSet( "APIKey", $self->{builder}->get_object( "APIKey" )->get_text );
     $self->{globals}->{config_manager}->simpleSet( "SYS_ID", $self->{builder}->get_object( "SYS_ID" )->get_text );
     $self->{globals}->{Panels_Max_Watts} = $self->{builder}->get_object( "Panels_Max_Watts" )->get_text;
@@ -812,7 +801,7 @@ sub on_SaveConfig_clicked {
     $self->{globals}->{config_manager}->simpleSet( "Panels_Max_Watts", $self->{globals}->{Panels_Max_Watts} );
     $self->{globals}->{config_manager}->simpleSet( "Graph_Min_Hour", $self->{globals}->{Graph_Min_Hour} );
     $self->{globals}->{config_manager}->simpleSet( "Graph_Max_Hour", $self->{globals}->{Graph_Max_Hour} );
-    
+    print "saved config\n";
     $self->render_graph;
     
 }
@@ -823,6 +812,16 @@ sub on_preferences_menu_item_activate {
     
     powercom::config->new( $self->{globals} );
     
+}
+
+sub comma_separated {
+
+    my ( $self, $number ) = @_;
+
+    $number =~ s/(\d)(?=(\d{3})+(\D|$))/$1\,/g;
+
+    return $number;
+
 }
 
 sub on_viewer_destroy {

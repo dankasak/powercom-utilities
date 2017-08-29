@@ -1,0 +1,2 @@
+This is the new Postgres schema. Create your connection in the GUI,
+and hit the 'create schema' button to execute each of these DDLs.
