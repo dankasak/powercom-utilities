@@ -54,7 +54,7 @@ if ( ! $auth_hash ) {
 }
 
 $globals->{dbh} = DBI->connect(
-    'dbi:Pg:dbname=' . $auth_hash->{Database} . ';host=' . $auth_hash->{Host} . ';port=' . $auth_hash->{Port}
+    'dbi:Pg:dbname=' . $auth_hash->{Database} . ';host=' . $auth_hash->{Host} . ';port=' . ( $auth_hash->{Port} || 5432 )
   , $auth_hash->{Username}
   , $auth_hash->{Password}
   , {
@@ -62,6 +62,8 @@ $globals->{dbh} = DBI->connect(
       , AutoCommit    => 1
     }
 ) || die( $DBI::errstr );
+
+die( "done" );
 
 my $config_manager = config_manager->new( $globals );
 
