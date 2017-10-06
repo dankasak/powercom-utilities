@@ -8,10 +8,13 @@ package powercom::viewer;
 use strict;
 use warnings;
 
+use parent 'window';
+
 use Pango;
 
 use Data::Dumper;
 use DateTime;
+use Color::Rgb;
 
 use Glib qw | TRUE FALSE |;
 
@@ -25,7 +28,7 @@ sub new {
     
     $self->{builder} = Gtk3::Builder->new;
     
-    $self->{builder}->add_objects_from_file( "$self->{globals}->{builder_dir}/viewer.ui", "viewer" );
+    $self->{builder}->add_objects_from_file( "$self->{globals}->{builder_dir}/viewer.ui", "viewer", "howto_buffer" );
     
     $self->{builder}->connect_signals( undef, $self );
     
@@ -51,16 +54,17 @@ sub new {
         {
             dbh             => $self->{globals}->{dbh}
         ,   sql             => {
-                                  select          => "*",
+                                  select          => "source, dataset_sql, summary_sql, colour, sort_order, multiplier, cost_per_kwh, null as rendered_colour",
                                 , from            => "sources"
                                 , order_by        => "source"
                                }
             , vbox            => $self->{builder}->get_object( "sources_box" )
             , auto_tools_box  => 1
+            , on_apply        => sub { $self->cache_sources }
             , fields          => [
                 {
                       name        => "source"
-                    , x_percent   => 10
+                    , x_percent   => 20
                 }
               , {
                       name        => "dataset_sql"
@@ -71,14 +75,8 @@ sub new {
                     , x_percent   => 25
                 }
               , {
-                      name        => "display_bits"
-                    , x_percent   => 10
-                }
-              , {
-                      name        => "colour"
-                    , renderer    => "image"
-                    , x_percent   => 10
-                    , custom_render_functions  => [ sub { $self->colour_cell_renderer( @_ ) } ]
+                    name        => "colour"
+                    , renderer    => "hidden"
                 }
               , {
                       name        => "sort_order"
@@ -88,9 +86,23 @@ sub new {
                       name        => "multiplier"
                     , x_absolute  => 100
                 }
+              , {
+                      name        => "cost per kwh"
+                    , x_absolute  => 100
+                }
+              , {
+                      name        => "rendered_colour"
+                    , renderer    => "image"
+                    , x_percent   => 10
+                    , custom_render_functions  => [ sub { $self->colour_cell_renderer( @_ ) } ]
+                }
             ]
         }
     );
+
+    $self->cache_sources;
+
+    $self->render_source_colours();
 
     my $picker = Gtk3::ColorButton->new();
     $picker->set_label( 'Choose colour ...' );
@@ -109,9 +121,51 @@ sub new {
 
 }
 
+sub render_source_colours {
+
+    my $self = shift;
+
+    # TODO: there are some issues here ... I really don't know what they are, especially since we're pre-rendering things ...
+
+    my $model = $self->{sources_datasheet}->{treeview}->get_model;
+
+    my $iter = $model->get_iter_first;
+
+    while ( $iter ) {
+
+        my $source_name   = $model->get( $iter, $self->{sources_datasheet}->column_from_column_name( "source" ) );
+        my $colour_string = $model->get( $iter, $self->{sources_datasheet}->column_from_column_name( "colour" ) );
+
+        print "Rendering source colour: [$source_name] - [$colour_string]\n";
+
+        my ( $r, $g, $b );
+        my $fillcolour;
+
+        if ( $colour_string =~ /rgb\((.*),(.*),(.*)\)/ ) {
+            ( $r, $g, $b ) = ( $1 / 255, $2 / 255, $3 / 255 );
+            $fillcolour = $r | $g | $b | 255;
+        }
+
+        my $rgba = Gtk3::Gdk::RGBA->new( $r, $g, $b, 1 );
+
+        my $pixbuf = Gtk3::Gdk::Pixbuf->new( 'GDK_COLORSPACE_RGB', 1, 8, 16, 16 );
+        $pixbuf->fill( $rgba );
+
+        $self->{rendered_colour_pixbufs}->{ $source_name } = $pixbuf;
+
+        if ( ! $model->iter_next( $iter ) ) {
+            last;
+        }
+
+    }
+
+}
+
 sub create_daily_summary_datasheet {
 
     my $self = shift;
+
+    warn "in create_daily_summary_datasheet()";
 
     if ( exists $self->{daily_summary} ) {
         $self->{daily_summary}->destroy;
@@ -121,52 +175,81 @@ sub create_daily_summary_datasheet {
         "select * from sources order by ( case when source = 'production' then 0 else 1 end )"
     );
 
-    my $sql = "select\n    *\nfrom";
+    my $from   = "from";
+    my $select = "select";
 
     my $fields;
     my $num_of_source = @$summary_sources;
 
+    my $rgb = Color::Rgb->new( rgb_txt => '/usr/share/X11/rgb.txt' );
+
     foreach my $source ( @{$summary_sources} ) {
+
+        my $rgb_string = $source->{colour};
+        my @rgb;
+
+        if ( $rgb_string =~ /rgb\((\d*),(\d*),(\d*)\)/ ) {
+            @rgb = ( $1, $2, $3 );
+        }
 
         if ( $source->{source} ne 'production' ) {
 
-            $sql .= "\nleft join    " . $source->{summary_sql} . " " . $source->{source} . " on " . $source->{source} . ".reading_date = production.reading_date";
+            $select .= "\n  , " . $source->{source} . ".watt_hours"
+                     . "\n  , " . $source->{source} . ".watt_hours / 1000 * " . ( $source->{cost_per_kwh} ? $source->{cost_per_kwh} : 0 );
+            $from .= "\nleft join    " . $source->{summary_sql} . " " . $source->{source} . " on " . $source->{source} . ".reading_date = production.reading_date";
 
             push
                 @{$fields}
               , {
-                    name       => $source->{summary_sql} . " reading date"
-                  , renderer   => "hidden"
-                }
-              , {
                     name       => $source->{source} . " kWh"
-                  , x_percent  => 100 / $num_of_source
+                  , header_markup => "<span color='#" . $rgb->rgb2hex( @rgb ) . "' weight='bold'>" . $source->{source} . " kWh</span>"
+                  , x_percent  => 75 / $num_of_source
                   , renderer   => "progress"
                   , custom_render_functions => [ sub { $self->summary_progress_renderer( @_ ) } ]
+                }
+              , {
+                    name       => $source->{source} . " cost"
+                  , header_markup => "<span color='#" . $rgb->rgb2hex( @rgb ) . "' weight='bold'>\$</span>"
+                  , x_percent  => 25 / $num_of_source
+                  , renderer   => "number"
+#                  , number     => {
+#                        decimal_places   => 2
+#                      , null_if_zero     => 1
+#                    }
                 };
 
         } else {
 
-            $sql .= "\n             " . $source->{summary_sql} . " " . $source->{source};
+            $select .= "\n    production.reading_date"
+                     . "\n  , production.watt_hours"
+                     . "\n  , production.watt_hours / 1000 * " . ( $source->{cost_per_kwh} ? $source->{cost_per_kwh} : 0 );
+            $from .= "\n             " . $source->{summary_sql} . " " . $source->{source};
 
             push
                 @{$fields}
               , {
                     name       => "reading date"
-                  , x_absolute => 120
+                  , x_absolute => 100
                 }
               , {
                     name       => $source->{source} . " kWh"
-                  , x_percent  => 100 / $num_of_source
+                  , header_markup => "<span color='#" . $rgb->rgb2hex( @rgb ) . "' weight='bold'>" . $source->{source} . " kWh</span>"
+                  , x_percent  => 75 / $num_of_source
                   , renderer   => "progress"
                   , custom_render_functions => [ sub { $self->summary_progress_renderer( @_ ) } ]
-                };
+                }
+              , {
+                    name       => $source->{source} . " cost"
+                  , header_markup => "<span color='#" . $rgb->rgb2hex( @rgb ) . "' weight='bold'>\$</span>"
+                  , x_percent  => 25 / $num_of_source
+                  , renderer   => "number"
+            };
 
         }
 
     }
 
-    $sql .= "\norder by\n    production.reading_date desc";
+    my $sql = $select . $from . "\norder by\n    production.reading_date desc";
 
     print "\n\n$sql\n\n";
 
@@ -179,6 +262,7 @@ sub create_daily_summary_datasheet {
           , fields          => $fields
           , vbox            => $self->{builder}->get_object( "daily_summary_box" )
           , on_row_select   => sub { $self->on_daily_summary_select( @_ ) }
+          , column_sorting  => 1
         }
     );
 
@@ -188,15 +272,15 @@ sub summary_progress_renderer {
 
     my ( $self , $column, $cell, $model, $iter ) = @_;
 
-    print "column: $cell->{column}\n";
+#    print "column: $cell->{column}\n";
 
     my $watt_hours = $model->get( $iter, $cell->{column} );
 
-    print " watt hours: " . $watt_hours . "\n";
+#    print " watt hours: " . $watt_hours . "\n";
 
-    my $wa_percent = $watt_hours / 20000 * 100;
+    my $watt_hours_percent = $watt_hours / 20000 * 100; # The use of 20000 is pretty arbitrary, but works well for me
 
-    $cell->set( value => $wa_percent );
+    $cell->set( value => $watt_hours_percent );
     $cell->set( text  => ( $watt_hours ? ( $self->comma_separated( $watt_hours / 1000 ) ) : "" ) );
 
 }
@@ -206,6 +290,7 @@ sub on_select_colour {
     my ( $self, $picker ) = @_;
 
     $self->{sources_datasheet}->set_column_value( "colour", $picker->get_rgba->to_string );
+    $self->render_source_colours();
 
 }
 
@@ -213,24 +298,11 @@ sub colour_cell_renderer {
 
     my ( $self, $column, $renderer, $model, $iter ) = @_;
 
-    my $colour_string = $model->get( $iter, 5 ); # TODO: replace with column number lookup
+    my $source_name = $model->get( $iter, $self->{sources_datasheet}->column_from_column_name( 'source' ) );
 
-    my ( $r, $g, $b );
-    my $fillcolour;
+#    print "renderer activated for [$source_name]\n";
 
-    if ( $colour_string =~ /rgb\((.*),(.*),(.*)\)/ ) {
-        ( $r, $g, $b ) = ( $1 / 255, $2 / 255, $3 / 255 );
-        $fillcolour = $r | $g | $b | 255;
-    } else {
-        die( "Failed to parse colour string: $colour_string" );
-    }
-
-    my $rgba = Gtk3::Gdk::RGBA->new( $r, $g, $b, 1 );
-
-    my $pixbuf = Gtk3::Gdk::Pixbuf->new( 'GDK_COLORSPACE_RGB', 1, 8, 16, 16 );
-    $pixbuf->fill( $rgba );
-
-    $renderer->set( 'pixbuf' => $pixbuf );
+    $renderer->set( 'pixbuf' => $self->{rendered_colour_pixbufs}->{ $source_name } );
 
 }
 
@@ -282,15 +354,18 @@ sub create_source_datasheets {
 sub on_daily_summary_select {
     
     my $self = shift;
-    
+
     my $day = $self->{daily_summary}->get_column_value( "reading_date" );
     
     $self->{reading_stats_day} = $day;
-    
+
+    $self->{graph_selections} = [];
+    $self->{graph_selection_counter} = -1;
+
     $self->load_stats_for_date( $day );
     
     $self->{progress}->set_text( $self->{daily_summary}->get_column_value( "upload_status" ) || "" );
-    
+
     return 1;
     
 }
@@ -298,7 +373,9 @@ sub on_daily_summary_select {
 sub load_stats_for_date {
     
     my ( $self, $date ) = @_;
-    
+
+    warn "in load_stats_for_date()";
+
     $self->{max_ac_power} = $self->{globals}->{Panels_Max_Watts};
 
     foreach my $stat_type ( keys %{$self->{stat_types}} ) {
@@ -326,10 +403,11 @@ sub load_stats_for_date {
 
     if ( ! $self->{motion_events_setup} ) {
 
-        $self->{drawing_area}->add_events(0x004|0x100|0x200); # TODO - find constants for these - they're events like 'mouse mpve'
+        $self->{drawing_area}->add_events(0x004|0x100|0x200); # TODO - find constants for these - they're events like 'mouse move'
 
         $self->{drawing_area}->signal_connect( 'motion_notify_event', sub { $self->handle_graph_mouse_move( @_ ) } );
-
+        $self->{drawing_area}->signal_connect( 'button_press_event', sub{ $self->handle_graph_button_press( @_ ) } );
+        $self->{drawing_area}->signal_connect( 'button_release_event', sub{ $self->handle_graph_button_release( @_ ) } );
         $self->{motion_events_setup} = 1;
 
     }
@@ -349,11 +427,67 @@ sub handle_graph_mouse_move {
     $self->{mouse_x} = $event->x;
     $self->{mouse_y} = $event->y;
 
-    print "queuing mouse position x: " . $self->{mouse_x} . " y: " . $self->{mouse_y} . "\n";
+    if  ( $self->{in_graph_selection_drag} ) {
+#        print "graph selection active!\n";
+        $self->{graph_selections}->[ $self->{graph_selection_counter} ]->{end_x} = $self->{mouse_x};
+        $self->{graph_selections}->[ $self->{graph_selection_counter} ]->{end_y} = $self->{mouse_y};
+    }
+
+#    print "queuing mouse position x: " . $self->{mouse_x} . " y: " . $self->{mouse_y} . "\n";
 
     if ( ! $self->{mouse_event_queued} ) {
         $self->{mouse_event_queued} = 1;
         $self->{drawing_area}->queue_draw;
+    }
+
+}
+
+sub handle_graph_button_press {
+
+    my ( $self, $widget, $event ) = @_;
+
+    $self->{graph_selection_counter} ++;
+
+    $self->{graph_selections}->[ $self->{graph_selection_counter} ]->{start_x} = $self->{mouse_x};
+    $self->{graph_selections}->[ $self->{graph_selection_counter} ]->{start_y} = $self->{mouse_y};
+
+#    print "Click event at x: " . $self->{mouse_x} . " y: " . $self->{mouse_y} . "\n";
+
+    $self->{in_graph_selection_drag} = 1;
+
+}
+
+sub handle_graph_button_release {
+
+    my ( $self, $widget, $event ) = @_;
+
+    $self->{graph_selections}->[ $self->{graph_selection_counter} ]->{end_x} = $self->{mouse_x};
+    $self->{graph_selections}->[ $self->{graph_selection_counter} ]->{end_y} = $self->{mouse_y};
+
+#    print "Release event at x: " . $self->{mouse_x} . " y: " . $self->{mouse_y} . "\n";
+
+#    if ( $self->{graph_selections}->[ $self->{graph_selection_counter} ]->{start_x} == $self->{mouse_x} ) {
+#        print "click detected ( as opposed to drag-selection )\n";
+#s    }
+
+    $self->{in_graph_selection_drag} = 0;
+
+}
+
+sub cache_sources {
+
+    my $self = shift;
+
+    my $sth = $self->{globals}->{dbh}->prepare(
+        "select source from sources order by sort_order"
+    ) || die( $self->{globals}->{dbh}->errstr );
+
+    $sth->execute() || die( $sth->errstr );
+
+    $self->{cached_sources} = undef;
+
+    while ( my $sorted_source = $sth->fetchrow_hashref ) {
+        push @{$self->{cached_sources}}, $sorted_source;
     }
 
 }
@@ -370,9 +504,9 @@ sub render_graph {
     my $total_width  = $widget->get_allocated_width;
     my $total_height = $widget->get_allocated_height;
     
-    print "==================================\n";
-    print "total height: $total_height\n";
-    print "==================================\n";
+#    print "==================================\n";
+#    print "total height: $total_height\n";
+#    print "==================================\n";
     
     my $earliest_sec = $self->{globals}->{Graph_Min_Hour} * 3600;
     my $latest_sec   = $self->{globals}->{Graph_Max_Hour} * 3600;
@@ -396,13 +530,7 @@ sub render_graph {
     $cairo_context->set_line_width( 3 );
     $cairo_context->move_to( 0, $graph_area_height );
 
-    my $sth = $self->{globals}->{dbh}->prepare(
-        "select source from sources order by sort_order"
-    ) || die( $self->{globals}->{dbh}->errstr );
-
-    $sth->execute() || die( $sth->errstr );
-
-    while ( my $sorted_source = $sth->fetchrow_hashref ) {
+    foreach my $sorted_source ( @{$self->{cached_sources}} ) {
         $self->render_graph_series( $widget, $surface, $sorted_source->{source} );
     }
 
@@ -425,11 +553,6 @@ sub render_graph {
         my $label_x_offset = $hour < 10 ? -3 : -8;
         
         $self->draw_graph_text( $cairo_context, $hour, 0, $this_x + $label_x_offset, $total_height - 20 );
-        
-        # white line
-#        $cairo_context->set_source_rgb( 255, 255, 255 );
-#        $cairo_context->rectangle( $this_x, $total_height, 5, 0 );
-#        $cairo_context->fill;
 
         $line_context->move_to( $this_x, $total_height - 23 );
         $line_context->line_to( $this_x, 0 );
@@ -443,7 +566,7 @@ sub render_graph {
     $cairo_context->set_source_rgb( 255, 255, 255 );
     
     # kw scale
-    print "Rendering POWER axis ticks ...\n";
+#    print "Rendering POWER axis ticks ...\n";
     
     my $tick_increment = $self->{max_ac_power} / 4;
     foreach my $tick_no ( 1, 2, 3, 4 ) {
@@ -482,9 +605,66 @@ sub render_graph {
         $line_context->line_to( $total_width, $self->{mouse_y} );
         $line_context->stroke;
 
+        # pointer time - calculate where on the x axis ( time ) the pointer is at
+        my $pointer_x_fraction  = 1 - ( ( $total_width - $self->{mouse_x} ) / $total_width );
+        my $pointer_time_offset = ( $self->{globals}->{Graph_Max_Hour} - $self->{globals}->{Graph_Min_Hour} ) * $pointer_x_fraction;
+        my $pointer_time        = $self->{globals}->{Graph_Min_Hour} + $pointer_time_offset;
+
+        my $pointer_hour = int( $pointer_time );
+        my $pointer_hour_fraction = $pointer_time - $pointer_hour;
+        my $pointer_minutes = int( $pointer_hour_fraction * 60 );
+
+#        print "\n\n pointer x fraction:  $pointer_x_fraction\n"
+#                . " pointer time offset: $pointer_time_offset\n"
+#                . " pointer time:        $pointer_time\n"
+#                . " pointer_hour frac:   $pointer_hour_fraction\n";
+
+        $self->draw_graph_text(
+            $cairo_context
+          , $pointer_hour . ":" . sprintf( "%02d", $pointer_minutes )
+          , 0
+          , ( $pointer_hour < 12 ? $self->{mouse_x} + 10 : $self->{mouse_x} - 50 )
+          , $total_height - 50
+        );
+
+        # pointer watts - as above, but for the y axis ( watts )
+        my $pointer_y_fraction = ( $total_height - $self->{mouse_y} ) / $total_height;
+        my $pointer_watts      = int( $self->{max_ac_power} * $pointer_y_fraction );
+
+        $self->draw_graph_text(
+            $cairo_context
+          , $pointer_watts
+          , 0
+          , 50
+          , $self->{mouse_y}
+        );
+
         $self->{mouse_event_queued} = 0;
 
     }
+
+    my $selection_context = Cairo::Context->create( $surface );
+    $selection_context->set_source_rgba( 1, 1, 1, 0.2 );
+    $selection_context->set_line_width( 3 );
+
+    foreach my $selection ( @{$self->{graph_selections}} ) {
+
+        $selection_context->move_to( $selection->{start_x}, 0 );
+        $selection_context->line_to( $selection->{start_x}, $y_segment * GRAPH_NO  );
+        $selection_context->line_to( $selection->{end_x}, $y_segment * GRAPH_NO  ); # undef
+        $selection_context->line_to( $selection->{end_x}, 0  ); # undef
+        $selection_context->line_to( $selection->{start_x}, 0  );
+
+        #$selection_context->stroke;
+        $selection_context->fill;
+
+    }
+
+}
+
+sub pointer_x_to_time {
+
+    # TODO :)
 
 }
 
@@ -495,9 +675,9 @@ sub render_graph_series {
     my $total_width  = $widget->get_allocated_width;
     my $total_height = $widget->get_allocated_height;
 
-    print "==================================\n";
-    print "total height: $total_height\n";
-    print "==================================\n";
+#    print "==================================\n";
+#    print "total height: $total_height\n";
+#    print "==================================\n";
 
     my $earliest_sec        = $self->{globals}->{Graph_Min_Hour} * 3600;
     my $latest_sec          = $self->{globals}->{Graph_Max_Hour} * 3600;
@@ -540,7 +720,7 @@ sub render_graph_series {
 
     } else {
 
-        die( "Failed to parse colour string: $colour_string" );
+        warn( "Failed to parse colour string: $colour_string" );
 
     }
 
@@ -554,7 +734,7 @@ sub render_graph_series {
 
     my $stats = $self->{stat_types}->{ $source }->{stats};
 
-    my ( $first_x , $last_x ); # memory for where to start and close off the sides of the graph
+    my ( $first_x , $last_x, $y_bar_memory ); # memory for where to start and close off the sides of the graph, and the Y of the previous bar ( start )
 
     for my $reading_datetime ( sort keys %{$stats} ) {
 
@@ -567,9 +747,12 @@ sub render_graph_series {
             die( "Failed to parse datetime: [$reading_datetime]" );
         }
 
+        # TODO: include date component, to support multi-day graphs
         my $secs_past_earliest = ( ( $hour * 3600 ) + ( $min * 60 ) + $sec ) - $earliest_sec;
 
-        # hack for final ( midnight ) reading - remove
+        # TODO: hack for final ( midnight ) reading - remove
+        # TODO: this also won't work for multi-day graphs
+
         if ( $hour eq '00' && $min eq '00' && $sec eq '00' && defined $first_x ) {
             $hour = 24;
             $secs_past_earliest = ( ( $hour * 3600 ) + ( $min * 60 ) + $sec ) - $earliest_sec;
@@ -578,6 +761,7 @@ sub render_graph_series {
         my $this_x = $secs_past_earliest * $sec_scale;
 
         if ( ! defined $first_x ) {
+            $y_bar_memory = $y_segment * GRAPH_NO;
             $this_stat_context->move_to( $this_x, $y_segment * GRAPH_NO );
             $this_stat_highlight_context->move_to( $this_x, $y_segment * GRAPH_NO );
             $first_x = $this_x;
@@ -592,13 +776,20 @@ sub render_graph_series {
         # For the current bar, we just trace our ceiling, and at the end, close it off
         # along the bottom of the graph area
 
-        #############
-        # temperature
         my $this_y = ( $y_segment * GRAPH_NO ) - ( $value * $this_stat_y_scale );
-        if ( $this_y > $total_height ) {
-            print "WTF?\n";
-            print "this stat y: $this_y\n";
-        }
+#        if ( $this_y > $total_height ) {
+#            print "WTF?\n";
+#            print "this stat y: $this_y\n";
+#        }
+
+        # Don't draw directly to the next point. We want *bars* that represent the average across
+        # the time ( x span ) of the ( previous ) reading
+
+        $this_stat_context->line_to( $this_x, $y_bar_memory );
+        $this_stat_highlight_context->line_to( $this_x, $y_bar_memory );
+        $y_bar_memory = $this_y;
+
+        # Now draw to our current value start
         $this_stat_context->line_to( $this_x, $this_y );
         $this_stat_highlight_context->line_to( $this_x, $this_y );
 
@@ -606,10 +797,14 @@ sub render_graph_series {
 
     }
 
-    print "Closing off [$source] graph, to Y level: [" . $y_segment * GRAPH_NO . "]\n";
+#    print "Closing off [$source] graph, to Y level: [" . $y_segment * GRAPH_NO . "]\n";
 
-    $this_stat_context->line_to( $last_x , $y_segment * GRAPH_NO );
-    $this_stat_highlight_context->line_to( $last_x, $y_segment * GRAPH_NO );
+    {
+        no warnings 'uninitialized';
+        $this_stat_context->line_to( $last_x , $y_segment * GRAPH_NO );
+        $this_stat_highlight_context->line_to( $last_x, $y_segment * GRAPH_NO );
+    }
+
     $this_stat_context->line_to( 0 , $y_segment * GRAPH_NO );
 
     $this_stat_context->fill;
@@ -620,8 +815,8 @@ sub render_graph_series {
 sub draw_graph_text {
     
     my ( $self, $cr, $text, $angle, $x, $y ) = @_;
-    
-    print "Writing [$text] at x [$x] y [$y]\n";
+
+#    print "Writing [$text] at x [$x] y [$y]\n";
     
     my $layout = Pango::Cairo::create_layout( $cr );
     $layout->set_text( $text );
@@ -641,14 +836,6 @@ sub draw_graph_text {
     Pango::Cairo::show_layout( $cr, $layout );
     
     $cr->restore;
-    
-}
-
-sub on_DailySummary_Apply_clicked {
-    
-    my $self = shift;
-    
-    $self->{daily_summary}->apply;
     
 }
 
@@ -739,18 +926,6 @@ sub on_UploadSelected_clicked {
     
 }
 
-sub on_RecalculateSelected_clicked {
-    
-    my $self = shift;
-    
-    my $day = $self->{daily_summary}->get_column_value( "reading_date" );
-    
-    $self->set_stats_for_day( $day );
-    
-    $self->{daily_summary}->query();
-    
-}
-
 sub on_PVOutputTestAPI_clicked {
     
     my $self = shift;
@@ -792,7 +967,7 @@ sub on_SaveConfig_clicked {
     
     my $self = shift;
 
-    print "saving config\n";
+#    print "saving config\n";
     $self->{globals}->{config_manager}->simpleSet( "APIKey", $self->{builder}->get_object( "APIKey" )->get_text );
     $self->{globals}->{config_manager}->simpleSet( "SYS_ID", $self->{builder}->get_object( "SYS_ID" )->get_text );
     $self->{globals}->{Panels_Max_Watts} = $self->{builder}->get_object( "Panels_Max_Watts" )->get_text;
@@ -801,7 +976,7 @@ sub on_SaveConfig_clicked {
     $self->{globals}->{config_manager}->simpleSet( "Panels_Max_Watts", $self->{globals}->{Panels_Max_Watts} );
     $self->{globals}->{config_manager}->simpleSet( "Graph_Min_Hour", $self->{globals}->{Graph_Min_Hour} );
     $self->{globals}->{config_manager}->simpleSet( "Graph_Max_Hour", $self->{globals}->{Graph_Max_Hour} );
-    print "saved config\n";
+#    print "saved config\n";
     $self->render_graph;
     
 }
@@ -824,11 +999,19 @@ sub comma_separated {
 
 }
 
+sub on_DB_Config_clicked {
+
+    my $self = shift;
+
+    $self->open_window( 'powercom::configuration', $self->{globals} );
+
+}
+
 sub on_viewer_destroy {
     
     my $self = shift;
-    
-    Gtk3->main_quit();
+
+    $self->close_window();
     
 }
 

@@ -9,6 +9,7 @@
     <property name="window_position">center</property>
     <property name="icon">sa_icon.png</property>
     <property name="gravity">center</property>
+    <signal name="destroy" handler="on_main_destroy" swapped="no"/>
     <child>
       <object class="GtkNotebook" id="notebook1">
         <property name="visible">True</property>

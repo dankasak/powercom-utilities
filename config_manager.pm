@@ -59,7 +59,7 @@ sub simpleSet {
     
     if ( $exists ) {
         
-        $self->{update_simple_config}->execute( $value, $exists->{key} );
+        $self->{update_simple_config}->execute( $value, $key );
         
     } else {
         

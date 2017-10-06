@@ -93,15 +93,11 @@ sub new {
         {
             dbh             => $self->{globals}->{db}
           , sql             => {
-                                    select      => "ID, key, value"
+                                    select      => "key, value"
                                   , from        => "simple_config"
                                }
           , fields          => [
                                     {
-                                        name        => "ID"
-                                      , renderer    => "hidden"
-                                    }
-                                  , {
                                         name        => "key"
                                       , x_percent   => 35
                                     }
@@ -375,6 +371,14 @@ sub on_ODBC_driver_config_clicked {
         'window::odbc_config'
       , $self->{globals}
     );
+
+}
+
+sub on_main_destroy {
+
+    my $self = shift;
+
+    $self->close_window;
 
 }
 

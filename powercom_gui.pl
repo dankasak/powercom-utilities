@@ -37,7 +37,7 @@ my $globals = {
     config_dir  => $ENV{ HOME } . "/.powercom"
   , current_dir => $current_dir
   , builder_dir => $current_dir . "/builder"
-  , windows     => \$windows
+  , windows     => $windows
 };
 
 eval {
@@ -105,7 +105,6 @@ my $main_auth_values = $globals->{config_manager}->get_auth_values( 'main' );
 
 if ( ! $main_auth_values ) {
 
-    # TODO: add signal to call Gtk3->main_quit when config screen closes
     $opening_window_class = 'powercom::configuration';
 
 } else {

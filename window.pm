@@ -938,6 +938,41 @@ sub handle_key_press_event {
     
 }
 
+sub close_window {
+
+    my ( $self , $class ) = @_;
+
+    # This function destroys the window of class $class.
+    # It then checks if there are any remaining windows open.
+    # If not, it exits the app.
+
+    if ( ! $class ) {
+        $class = ref $self;
+    }
+
+    if ( ! exists $self->{globals}->{windows}->{$class} ) {
+
+        print "UI::close_window() was asked to close window [$class] ... but this doesn't exist in the globals hash!\n";
+        return;
+
+    } else {
+
+        my $window = $self->get_window();
+
+        if ( $window ) {
+            $window->destroy;
+        }
+
+        delete $self->{globals}->{windows}->{$class};
+
+        if ( ! keys %{$self->{globals}->{windows}} ) {
+            Gtk3::main_quit();
+        }
+
+    }
+
+}
+
 sub close_all_windows {
     
     my $self = shift;

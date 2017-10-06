@@ -1,11 +1,50 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Generated with glade 3.20.0 -->
 <interface>
-  <requires lib="gtk+" version="3.0"/>
+  <requires lib="gtk+" version="3.10"/>
+  <object class="GtkTextBuffer" id="howto_buffer">
+    <property name="text" translatable="yes">Managing Sources
+
+Add a 'sources' record to add a new graph source. The first column - source - should contain a unique name of the source. You should
+call one of them 'production' - which would typically be your solar production values. The app expects to find this one source named 'production'.
+
+---
+
+For 'dataset_sql', enter either some SQL or a view / materialized view that returns bulk data for the source. You *must* return the colums:
+ - reading_datetime
+ - watts
+
+Other columns, if present, will be ignored.
+
+---
+
+For 'summary_sql', enter either some SQL or a view / materialized view that returns a summary for the source type per day. You *must* return the columns:
+ - reading_date
+ - watt_hours
+
+Other columns, if present, will be ignored.
+
+---
+
+The 'sort_order' column sorts the sources before rendering. Sources with lower numbers will be rendered 1st, and hence be 'behind' sources with a higher sort_order.
+
+---
+
+The 'multiplier' column is for projecting values onto the graph area. For instantanous readings ( eg from a solar panel ), enter a multiplier of 1. For readings that are aggregate values over a time period, you will need to adjust the multiplier. For example, if you receive data from your energy provider on a half-hourly basis, they will give you a figure like 1.5 kWh for that half-hour. To project this onto the graph, you would need to multiply by 2 ... ie if you used the same amount of energy in the 1st half-hour as the 2nd, you would end up using 3kWh. To represent this on the graph, you need to multiply by to. For quarter-hourly, you need to multiply by 4, etc ...
+
+---
+
+The 'cost per kwh' figure is not required, but if given will give you a per-day summary of value per day per source.
+
+---
+
+You can select a colour for each source by highlighting the source record and clicking the 'Choose colour ...' button, and choosing a colour.</property>
+  </object>
   <object class="GtkWindow" id="viewer">
     <property name="width_request">1024</property>
     <property name="height_request">640</property>
     <property name="can_focus">False</property>
+    <property name="title" translatable="yes">Energy Monitor</property>
     <signal name="destroy" handler="on_viewer_destroy" after="yes" swapped="no"/>
     <child>
       <object class="GtkPaned" id="paned1">
@@ -17,7 +56,6 @@
           <object class="GtkBox" id="graph_box">
             <property name="visible">True</property>
             <property name="can_focus">False</property>
-            <property name="orientation">vertical</property>
             <child>
               <placeholder/>
             </child>
@@ -262,12 +300,57 @@
                   </packing>
                 </child>
                 <child>
-                  <object class="GtkBox" id="sources_box">
+                  <object class="GtkNotebook">
                     <property name="visible">True</property>
-                    <property name="can_focus">False</property>
-                    <property name="orientation">vertical</property>
+                    <property name="can_focus">True</property>
                     <child>
-                      <placeholder/>
+                      <object class="GtkBox" id="sources_box">
+                        <property name="visible">True</property>
+                        <property name="can_focus">False</property>
+                        <property name="orientation">vertical</property>
+                        <child>
+                          <placeholder/>
+                        </child>
+                      </object>
+                    </child>
+                    <child type="tab">
+                      <object class="GtkLabel">
+                        <property name="visible">True</property>
+                        <property name="can_focus">False</property>
+                        <property name="label" translatable="yes">setup</property>
+                      </object>
+                      <packing>
+                        <property name="tab_fill">False</property>
+                      </packing>
+                    </child>
+                    <child>
+                      <object class="GtkScrolledWindow">
+                        <property name="visible">True</property>
+                        <property name="can_focus">True</property>
+                        <property name="shadow_type">in</property>
+                        <child>
+                          <object class="GtkTextView">
+                            <property name="visible">True</property>
+                            <property name="can_focus">True</property>
+                            <property name="wrap_mode">word</property>
+                            <property name="buffer">howto_buffer</property>
+                          </object>
+                        </child>
+                      </object>
+                      <packing>
+                        <property name="position">1</property>
+                      </packing>
+                    </child>
+                    <child type="tab">
+                      <object class="GtkLabel">
+                        <property name="visible">True</property>
+                        <property name="can_focus">False</property>
+                        <property name="label" translatable="yes">howto</property>
+                      </object>
+                      <packing>
+                        <property name="position">1</property>
+                        <property name="tab_fill">False</property>
+                      </packing>
                     </child>
                   </object>
                   <packing>
@@ -455,38 +538,17 @@
                           <object class="GtkLabel" id="label14">
                             <property name="visible">True</property>
                             <property name="can_focus">False</property>
-                            <property name="label" translatable="yes">&lt;b&gt;Configuration&lt;/b&gt;</property>
+                            <property name="label" translatable="yes">&lt;b&gt;PV Output Configuration&lt;/b&gt;</property>
                             <property name="use_markup">True</property>
                           </object>
                         </child>
                       </object>
                       <packing>
-                        <property name="expand">False</property>
+                        <property name="expand">True</property>
                         <property name="fill">True</property>
                         <property name="position">1</property>
                       </packing>
                     </child>
-                  </object>
-                  <packing>
-                    <property name="position">2</property>
-                  </packing>
-                </child>
-                <child type="tab">
-                  <object class="GtkLabel">
-                    <property name="visible">True</property>
-                    <property name="can_focus">False</property>
-                    <property name="label" translatable="yes">PV Output</property>
-                  </object>
-                  <packing>
-                    <property name="position">2</property>
-                    <property name="tab_fill">False</property>
-                  </packing>
-                </child>
-                <child>
-                  <object class="GtkBox">
-                    <property name="visible">True</property>
-                    <property name="can_focus">False</property>
-                    <property name="orientation">vertical</property>
                     <child>
                       <object class="GtkBox" id="box14">
                         <property name="visible">True</property>
@@ -593,30 +655,78 @@
                             <property name="position">2</property>
                           </packing>
                         </child>
+                        <child>
+                          <object class="GtkButton" id="SaveConfig">
+                            <property name="visible">True</property>
+                            <property name="can_focus">True</property>
+                            <property name="receives_default">True</property>
+                            <signal name="clicked" handler="on_SaveConfig_clicked" swapped="no"/>
+                            <child>
+                              <object class="GtkBox" id="box15">
+                                <property name="visible">True</property>
+                                <property name="can_focus">False</property>
+                                <property name="homogeneous">True</property>
+                                <child>
+                                  <object class="GtkLabel" id="label13">
+                                    <property name="visible">True</property>
+                                    <property name="can_focus">False</property>
+                                    <property name="xpad">5</property>
+                                    <property name="label" translatable="yes">Save</property>
+                                    <property name="xalign">1</property>
+                                  </object>
+                                  <packing>
+                                    <property name="expand">False</property>
+                                    <property name="fill">True</property>
+                                    <property name="position">0</property>
+                                  </packing>
+                                </child>
+                                <child>
+                                  <object class="GtkImage" id="image6">
+                                    <property name="visible">True</property>
+                                    <property name="can_focus">False</property>
+                                    <property name="xalign">0</property>
+                                    <property name="xpad">5</property>
+                                    <property name="stock">gtk-save</property>
+                                  </object>
+                                  <packing>
+                                    <property name="expand">False</property>
+                                    <property name="fill">True</property>
+                                    <property name="position">1</property>
+                                  </packing>
+                                </child>
+                              </object>
+                            </child>
+                          </object>
+                          <packing>
+                            <property name="expand">True</property>
+                            <property name="fill">True</property>
+                            <property name="position">3</property>
+                          </packing>
+                        </child>
                       </object>
                       <packing>
                         <property name="expand">True</property>
                         <property name="fill">True</property>
-                        <property name="position">0</property>
+                        <property name="position">2</property>
                       </packing>
                     </child>
                     <child>
-                      <object class="GtkButton" id="SaveConfig">
+                      <object class="GtkButton" id="DB_Config">
                         <property name="visible">True</property>
                         <property name="can_focus">True</property>
                         <property name="receives_default">True</property>
-                        <signal name="clicked" handler="on_SaveConfig_clicked" swapped="no"/>
+                        <signal name="clicked" handler="on_DB_Config_clicked" after="yes" swapped="no"/>
                         <child>
-                          <object class="GtkBox" id="box15">
+                          <object class="GtkBox" id="box2">
                             <property name="visible">True</property>
                             <property name="can_focus">False</property>
                             <property name="homogeneous">True</property>
                             <child>
-                              <object class="GtkLabel" id="label13">
+                              <object class="GtkLabel" id="label1">
                                 <property name="visible">True</property>
                                 <property name="can_focus">False</property>
                                 <property name="xpad">5</property>
-                                <property name="label" translatable="yes">Save</property>
+                                <property name="label" translatable="yes">Launch Database Config wizard ...</property>
                                 <property name="xalign">1</property>
                               </object>
                               <packing>
@@ -626,12 +736,12 @@
                               </packing>
                             </child>
                             <child>
-                              <object class="GtkImage" id="image6">
+                              <object class="GtkImage" id="image7">
                                 <property name="visible">True</property>
                                 <property name="can_focus">False</property>
                                 <property name="xalign">0</property>
                                 <property name="xpad">5</property>
-                                <property name="stock">gtk-save</property>
+                                <property name="stock">gtk-connect</property>
                               </object>
                               <packing>
                                 <property name="expand">False</property>
@@ -645,22 +755,22 @@
                       <packing>
                         <property name="expand">True</property>
                         <property name="fill">True</property>
-                        <property name="position">1</property>
+                        <property name="position">3</property>
                       </packing>
                     </child>
                   </object>
                   <packing>
-                    <property name="position">3</property>
+                    <property name="position">2</property>
                   </packing>
                 </child>
                 <child type="tab">
                   <object class="GtkLabel">
                     <property name="visible">True</property>
                     <property name="can_focus">False</property>
-                    <property name="label" translatable="yes">Graph Options</property>
+                    <property name="label" translatable="yes">miscellanous</property>
                   </object>
                   <packing>
-                    <property name="position">3</property>
+                    <property name="position">2</property>
                     <property name="tab_fill">False</property>
                   </packing>
                 </child>
