@@ -18,6 +18,8 @@ use Color::Rgb;
 
 use Glib qw | TRUE FALSE |;
 
+use Storable;
+
 sub new {
     
     my ( $class, $globals ) = @_;
@@ -263,6 +265,7 @@ sub create_daily_summary_datasheet {
           , vbox            => $self->{builder}->get_object( "daily_summary_box" )
           , on_row_select   => sub { $self->on_daily_summary_select( @_ ) }
           , column_sorting  => 1
+          , multi_select    => 1
         }
     );
 
@@ -355,16 +358,32 @@ sub on_daily_summary_select {
     
     my $self = shift;
 
-    my $day = $self->{daily_summary}->get_column_value( "reading_date" );
-    
-    $self->{reading_stats_day} = $day;
-
     $self->{graph_selections} = [];
     $self->{graph_selection_counter} = -1;
 
-    $self->load_stats_for_date( $day );
-    
-    $self->{progress}->set_text( $self->{daily_summary}->get_column_value( "upload_status" ) || "" );
+    undef $self->{motion_events_setup};
+
+    foreach my $drawing_area ( @{$self->{drawing_areas}} ) {
+        $drawing_area->destroy;
+    }
+
+    $self->{drawing_areas} = [];
+
+#    if ( $self->{drawing_area} ) {
+#        $self->{drawing_area}->destroy;
+#        # TODO: disconnect mouse signal
+#    }
+
+    my @selected_dates = $self->{daily_summary}->get_column_value( "reading_date" );
+    @{$self->{selected_dates}} = @selected_dates;
+
+    foreach my $date ( sort @selected_dates ) {
+        $self->load_stats_for_date( $date );
+    }
+
+    $self->{motion_events_setup} = 1;
+
+#    $self->{progress}->set_text( $self->{daily_summary}->get_column_value( "upload_status" ) || "" );
 
     return 1;
     
@@ -373,8 +392,6 @@ sub on_daily_summary_select {
 sub load_stats_for_date {
     
     my ( $self, $date ) = @_;
-
-    warn "in load_stats_for_date()";
 
     $self->{max_ac_power} = $self->{globals}->{Panels_Max_Watts};
 
@@ -389,40 +406,46 @@ sub load_stats_for_date {
         $sth->execute( $date, $date )
             || die( $sth->errstr );
 
-        $self->{stat_types}->{ $stat_type }->{stats} = $sth->fetchall_hashref( 'reading_datetime' );
-
+#        $self->{stat_types}->{ $stat_type }->{stats} = $sth->fetchall_hashref( 'reading_datetime' );
+        $self->{stat_types}->{ $stat_type }->{stats_by_date}->{$date} = $sth->fetchall_hashref( 'reading_datetime' );
     }
 
-    if ( $self->{drawing_area} ) {
-        $self->{drawing_area}->destroy;
-        undef $self->{motion_events_setup};
-        # TODO: disconnect mouse signal
-    }
-    
-    $self->{drawing_area} = Gtk3::DrawingArea->new;
+#    if ( $self->{drawing_area} ) {
+#        $self->{drawing_area}->destroy;
+#        undef $self->{motion_events_setup};
+#        # TODO: disconnect mouse signal
+#    }
+
+#    $self->{drawing_area} = Gtk3::DrawingArea->new;
+    my $drawing_area = Gtk3::DrawingArea->new;
 
     if ( ! $self->{motion_events_setup} ) {
 
-        $self->{drawing_area}->add_events(0x004|0x100|0x200); # TODO - find constants for these - they're events like 'mouse move'
+        $drawing_area->add_events(0x004|0x100|0x200); # TODO - find constants for these - they're events like 'mouse move'
 
-        $self->{drawing_area}->signal_connect( 'motion_notify_event', sub { $self->handle_graph_mouse_move( @_ ) } );
-        $self->{drawing_area}->signal_connect( 'button_press_event', sub{ $self->handle_graph_button_press( @_ ) } );
-        $self->{drawing_area}->signal_connect( 'button_release_event', sub{ $self->handle_graph_button_release( @_ ) } );
-        $self->{motion_events_setup} = 1;
+        $drawing_area->signal_connect( 'motion_notify_event', sub { $self->handle_graph_mouse_move( @_ ) } );
+        $drawing_area->signal_connect( 'button_press_event', sub{ $self->handle_graph_button_press( @_ ) } );
+        $drawing_area->signal_connect( 'button_release_event', sub{ $self->handle_graph_button_release( @_ ) } );
 
     }
 
     $self->{builder}->get_object( "graph_box" )->pack_start(
-        $self->{drawing_area}, 1, 1, 0 );
-    
-    $self->{drawing_area}->show;
-    $self->{drawing_area}->signal_connect( draw => sub { $self->render_graph( @_ ) } );
+        $drawing_area, 1, 1, 0 );
+
+#    store $self->{stat_types}, "/home/dkasak/stat_types.storable";
+
+    $drawing_area->show;
+    $drawing_area->signal_connect( draw => sub { $self->render_graph( @_, $date ) } );
+
+    push @{$self->{drawing_areas}}, $drawing_area;
 
 }
 
 sub handle_graph_mouse_move {
 
     my ( $self, $widget, $event ) = @_;
+
+    return; # TODO: drawing_areas
 
     $self->{mouse_x} = $event->x;
     $self->{mouse_y} = $event->y;
@@ -494,9 +517,11 @@ sub cache_sources {
 
 sub render_graph {
     
-    my ( $self, $widget, $cairo_context ) = @_;
-    
-    my $surface = $cairo_context->get_target;
+    my ( $self, $widget, $cairo_context, $date ) = @_;
+
+    print "render_graph():\n widget: $widget\n context: $cairo_context\n date: $date\n\n";
+
+    #my $surface = $cairo_context->get_target;
     
     # Create a white backing for the graphs
     $cairo_context->set_source_rgb( 0, 0, 0 );
@@ -527,11 +552,11 @@ sub render_graph {
     my $y_segment              = $graph_area_height / NO_OF_GRAPHS;
     
     $cairo_context->set_source_rgb( 0, 255, 168 );
-    $cairo_context->set_line_width( 3 );
+    $cairo_context->set_line_width( 1 );
     $cairo_context->move_to( 0, $graph_area_height );
 
     foreach my $sorted_source ( @{$self->{cached_sources}} ) {
-        $self->render_graph_series( $widget, $surface, $sorted_source->{source} );
+        $self->render_graph_series( $widget, $sorted_source->{source}, $cairo_context, $date );
     }
 
     # - - - - - - - - - -
@@ -539,12 +564,23 @@ sub render_graph {
     # - - - - - - - - - -
     
     # Now render the X & Y axis labels and partitioning lines
-    my $line_context = Cairo::Context->create( $surface );
-    $line_context->set_source_rgba( 1, 1, 1, 0.2 );
-    $line_context->set_line_width( 3 );
+    $cairo_context->set_source_rgba( 1, 1, 1, 0.4 );
+    $cairo_context->set_line_width( 1 );
     
     for ( my $hour = $self->{globals}->{Graph_Min_Hour}; $hour <= $self->{globals}->{Graph_Max_Hour}; $hour++ ) {
-        
+
+        my $date_selection_count = scalar( @{$self->{selected_dates}} );
+
+        if ( $date_selection_count > 6 ) {
+            if ( $hour != 0 ) {
+                next;
+            }
+        } elsif ( $date_selection_count > 2 ) {
+            if  ( $hour % 6 != 0 ) {
+                next;
+            }
+        }
+
         my $secs_past_earliest = ( $hour * 3600 ) - $earliest_sec;
         my $this_x = $secs_past_earliest * $sec_scale;
         
@@ -552,58 +588,65 @@ sub render_graph {
         # We want the text centered around $this_x ... which is different for 1 & 2 digit numbers ...
         my $label_x_offset = $hour < 10 ? -3 : -8;
         
-        $self->draw_graph_text( $cairo_context, $hour, 0, $this_x + $label_x_offset, $total_height - 20 );
+        $self->draw_graph_text( $cairo_context, ( $hour == 24 ? 0 : $hour ), 0, $this_x + $label_x_offset, $total_height - 20 );
 
-        $line_context->move_to( $this_x, $total_height - 23 );
-        $line_context->line_to( $this_x, 0 );
-        $line_context->line_to( $this_x + 1, 0);
-        $line_context->line_to( $this_x + 1, $total_height - 23 );
-        $line_context->line_to( $this_x, $total_height - 23 );
-        $line_context->fill;
+        $cairo_context->move_to( $this_x, $total_height - 23 );
+        $cairo_context->line_to( $this_x, 0 );
+        $cairo_context->line_to( $this_x + 1, 0);
+        $cairo_context->line_to( $this_x + 1, $total_height - 23 );
+        $cairo_context->line_to( $this_x, $total_height - 23 );
+        $cairo_context->fill;
         
     }
-    
-    $cairo_context->set_source_rgb( 255, 255, 255 );
     
     # kw scale
 #    print "Rendering POWER axis ticks ...\n";
     
     my $tick_increment = $self->{max_ac_power} / 4;
-    foreach my $tick_no ( 1, 2, 3, 4 ) {
-        
-        my $this_tick_value = $tick_no * $tick_increment;
+
+    foreach my $tick_no ( 1 , 2 , 3 , 4 ) {
+
         my $y = ( $y_segment * GRAPH_NO ) - ( $tick_no * $tick_increment * $ac_power_y_scale );
-        
+
         # For the text, the $y that we pass into $self->draw_graph_text
         # is the TOP ( lower value ) that the text can occupy
-        my $label_y_offset = -8;
-        
-        $self->draw_graph_text(
-            $cairo_context
-          , $tick_no * $tick_increment
-          , 0
-          , 0
-          , $y + $label_y_offset
-        );
-        
-        $line_context->move_to( 30, $y );
-        $line_context->line_to( $total_width, $y );
-        $line_context->line_to( $total_width, $y - 1 );
-        $line_context->line_to( 30, $y - 1 );
-        $line_context->line_to( 30, $y );
-        $line_context->fill;
-        
+        my $label_y_offset = - 8;
+
+        my $selected_dates = $self->{selected_dates};
+
+        my $horizontal_x;
+
+        if ( $date eq $$selected_dates[$#$selected_dates] ) {
+            $horizontal_x = 30;
+            $self->draw_graph_text(
+                $cairo_context
+              , $tick_no * $tick_increment
+              , 0
+              , 0
+              , $y + $label_y_offset
+            );
+        } else {
+            $horizontal_x = 0;
+        }
+
+        $cairo_context->move_to( $horizontal_x , $y );
+        $cairo_context->line_to( $total_width , $y );
+        $cairo_context->line_to( $total_width , $y - 1 );
+        $cairo_context->line_to( $horizontal_x , $y - 1 );
+        $cairo_context->line_to( $horizontal_x , $y );
+        $cairo_context->fill;
+
     }
 
     if ( $self->{mouse_x} ) {
 
-        $line_context->move_to( $self->{mouse_x}, 0 );
-        $line_context->line_to( $self->{mouse_x}, $total_height - 23 );
-        $line_context->stroke;
+        $cairo_context->move_to( $self->{mouse_x}, 0 );
+        $cairo_context->line_to( $self->{mouse_x}, $total_height - 23 );
+        $cairo_context->stroke;
 
-        $line_context->move_to( 0, $self->{mouse_y} );
-        $line_context->line_to( $total_width, $self->{mouse_y} );
-        $line_context->stroke;
+        $cairo_context->move_to( 0, $self->{mouse_y} );
+        $cairo_context->line_to( $total_width, $self->{mouse_y} );
+        $cairo_context->stroke;
 
         # pointer time - calculate where on the x axis ( time ) the pointer is at
         my $pointer_x_fraction  = 1 - ( ( $total_width - $self->{mouse_x} ) / $total_width );
@@ -643,22 +686,22 @@ sub render_graph {
 
     }
 
-    my $selection_context = Cairo::Context->create( $surface );
-    $selection_context->set_source_rgba( 1, 1, 1, 0.2 );
-    $selection_context->set_line_width( 3 );
-
-    foreach my $selection ( @{$self->{graph_selections}} ) {
-
-        $selection_context->move_to( $selection->{start_x}, 0 );
-        $selection_context->line_to( $selection->{start_x}, $y_segment * GRAPH_NO  );
-        $selection_context->line_to( $selection->{end_x}, $y_segment * GRAPH_NO  ); # undef
-        $selection_context->line_to( $selection->{end_x}, 0  ); # undef
-        $selection_context->line_to( $selection->{start_x}, 0  );
-
-        #$selection_context->stroke;
-        $selection_context->fill;
-
-    }
+#    my $selection_context = Cairo::Context->create( $surface );
+#    $selection_context->set_source_rgba( 1, 1, 1, 0.2 );
+#    $selection_context->set_line_width( 3 );
+#
+#    foreach my $selection ( @{$self->{graph_selections}} ) {
+#
+#        $selection_context->move_to( $selection->{start_x}, 0 );
+#        $selection_context->line_to( $selection->{start_x}, $y_segment * GRAPH_NO  );
+#        $selection_context->line_to( $selection->{end_x}, $y_segment * GRAPH_NO  ); # undef
+#        $selection_context->line_to( $selection->{end_x}, 0  ); # undef
+#        $selection_context->line_to( $selection->{start_x}, 0  );
+#
+#        #$selection_context->stroke;
+#        $selection_context->fill;
+#
+#    }
 
 }
 
@@ -670,7 +713,11 @@ sub pointer_x_to_time {
 
 sub render_graph_series {
 
-    my ( $self, $widget, $surface, $source ) = @_;
+    my ( $self, $widget, $source, $cairo_context, $date ) = @_;
+
+    print "widget: $widget\ndate: $date\n\n";
+
+#    my $surface = $cairo_context->get_target;
 
     my $total_width  = $widget->get_allocated_width;
     my $total_height = $widget->get_allocated_height;
@@ -693,10 +740,6 @@ sub render_graph_series {
 
     my $y_segment                       = $graph_area_height / NO_OF_GRAPHS;
 
-    my $this_stat_context               = Cairo::Context->create( $surface );
-    my $this_stat_highlight_context     = Cairo::Context->create( $surface );
-
-#    my $this_stat_gradient  = Cairo::LinearGradient->create( $total_width / 2, $total_height, $total_width / 2, $total_height / 1.5 );
     my $this_stat_gradient  = Cairo::LinearGradient->create( $total_width, $total_height, $total_width, $total_height );
 
     my $colour_string       = $self->{stat_types}->{ $source }->{colour};
@@ -725,90 +768,87 @@ sub render_graph_series {
     }
 
     $this_stat_gradient->add_color_stop_rgba( 0  , 0.0, 0.0, 0.0, 0.8 );
-#    $this_stat_gradient->add_color_stop_rgba( 0.5, 0.3, 0.3, 0.3, 0.5 );
     $this_stat_gradient->add_color_stop_rgba( 1  , $red, $green, $blue, 0.8 );
 
-    $this_stat_context->set_source( $this_stat_gradient );
-    $this_stat_highlight_context->set_source_rgba( $red_highlight, $green_highlight, $blue_highlight, 0.8 );
-    $this_stat_context->set_line_width( 3 );
+    my $stats = $self->{stat_types}->{ $source }->{stats_by_date}->{$date};
 
-    my $stats = $self->{stat_types}->{ $source }->{stats};
+    foreach my $pass ( qw | regular highlight | ) {
 
-    my ( $first_x , $last_x, $y_bar_memory ); # memory for where to start and close off the sides of the graph, and the Y of the previous bar ( start )
+        my ( $first_x , $last_x, $y_bar_memory ); # memory for where to start and close off the sides of the graph, and the Y of the previous bar ( start )
 
-    for my $reading_datetime ( sort keys %{$stats} ) {
-
-        # First, figure out the X value of this data
-        my ( $hour, $min, $sec );
-
-        if ( $reading_datetime =~ /\d{4}-\d{2}-\d{2}\s(\d{2}):(\d{2}):(\d{2})/ ) {
-            ( $hour, $min, $sec ) = ( $1, $2, $3 );
+        if ( $pass eq 'regular' ) {
+            $cairo_context->set_source( $this_stat_gradient );
         } else {
-            die( "Failed to parse datetime: [$reading_datetime]" );
+            $cairo_context->set_source_rgba( $red_highlight, $green_highlight, $blue_highlight, 0.8 );
         }
 
-        # TODO: include date component, to support multi-day graphs
-        my $secs_past_earliest = ( ( $hour * 3600 ) + ( $min * 60 ) + $sec ) - $earliest_sec;
+        for my $reading_datetime ( sort keys %{$stats} ) {
 
-        # TODO: hack for final ( midnight ) reading - remove
-        # TODO: this also won't work for multi-day graphs
+            # First, figure out the X value of this data
+            my ( $hour, $min, $sec );
 
-        if ( $hour eq '00' && $min eq '00' && $sec eq '00' && defined $first_x ) {
-            $hour = 24;
-            $secs_past_earliest = ( ( $hour * 3600 ) + ( $min * 60 ) + $sec ) - $earliest_sec;
+            if ( $reading_datetime =~ /\d{4}-\d{2}-\d{2}\s(\d{2}):(\d{2}):(\d{2})/ ) {
+                ( $hour, $min, $sec ) = ( $1, $2, $3 );
+            } else {
+                die( "Failed to parse datetime: [$reading_datetime]" );
+            }
+
+            # TODO: include date component, to support multi-day graphs
+            my $secs_past_earliest = ( ( $hour * 3600 ) + ( $min * 60 ) + $sec ) - $earliest_sec;
+
+            # TODO: hack for final ( midnight ) reading - remove
+            # TODO: this also won't work for multi-day graphs
+
+            if ( $hour eq '00' && $min eq '00' && $sec eq '00' && defined $first_x ) {
+                $hour = 24;
+                $secs_past_earliest = ( ( $hour * 3600 ) + ( $min * 60 ) + $sec ) - $earliest_sec;
+            }
+
+            my $this_x = $secs_past_earliest * $sec_scale;
+
+            if ( ! defined $first_x ) {
+                $y_bar_memory = $y_segment * GRAPH_NO;
+                $cairo_context->move_to( $this_x, $y_segment * GRAPH_NO );
+                $first_x = $this_x;
+            }
+
+            # For Y values, 0 is the top of the area
+            # So the formula for calculating the Y value is:
+            #  BASE OF GRAPH - HEIGHT
+
+            my $value = $stats->{ $reading_datetime }->{watt_hours};
+
+            # For the current bar, we just trace our ceiling, and at the end, close it off
+            # along the bottom of the graph area
+
+            my $this_y = ( $y_segment * GRAPH_NO ) - ( $value * $this_stat_y_scale );
+
+            # Don't draw directly to the next point. We want *bars* that represent the average across
+            # the time ( x span ) of the ( previous ) reading
+
+            $cairo_context->line_to( $this_x, $y_bar_memory );
+            $y_bar_memory = $this_y;
+
+            # Now draw to our current value start
+            $cairo_context->line_to( $this_x, $this_y );
+
+            $last_x = $this_x;
+
         }
 
-        my $this_x = $secs_past_earliest * $sec_scale;
-
-        if ( ! defined $first_x ) {
-            $y_bar_memory = $y_segment * GRAPH_NO;
-            $this_stat_context->move_to( $this_x, $y_segment * GRAPH_NO );
-            $this_stat_highlight_context->move_to( $this_x, $y_segment * GRAPH_NO );
-            $first_x = $this_x;
+        {
+            no warnings 'uninitialized';
+            $cairo_context->line_to( $last_x , $y_segment * GRAPH_NO );
         }
 
-        # For Y values, 0 is the top of the area
-        # So the formula for calculating the Y value is:
-        #  BASE OF GRAPH - HEIGHT
-
-        my $value = $stats->{ $reading_datetime }->{watt_hours};
-
-        # For the current bar, we just trace our ceiling, and at the end, close it off
-        # along the bottom of the graph area
-
-        my $this_y = ( $y_segment * GRAPH_NO ) - ( $value * $this_stat_y_scale );
-#        if ( $this_y > $total_height ) {
-#            print "WTF?\n";
-#            print "this stat y: $this_y\n";
-#        }
-
-        # Don't draw directly to the next point. We want *bars* that represent the average across
-        # the time ( x span ) of the ( previous ) reading
-
-        $this_stat_context->line_to( $this_x, $y_bar_memory );
-        $this_stat_highlight_context->line_to( $this_x, $y_bar_memory );
-        $y_bar_memory = $this_y;
-
-        # Now draw to our current value start
-        $this_stat_context->line_to( $this_x, $this_y );
-        $this_stat_highlight_context->line_to( $this_x, $this_y );
-
-        $last_x = $this_x;
+        if ( $pass eq 'regular' ) {
+            $cairo_context->line_to(0 , $y_segment * GRAPH_NO);
+            $cairo_context->fill;
+        } else {
+            $cairo_context->stroke;
+        }
 
     }
-
-#    print "Closing off [$source] graph, to Y level: [" . $y_segment * GRAPH_NO . "]\n";
-
-    {
-        no warnings 'uninitialized';
-        $this_stat_context->line_to( $last_x , $y_segment * GRAPH_NO );
-        $this_stat_highlight_context->line_to( $last_x, $y_segment * GRAPH_NO );
-    }
-
-    $this_stat_context->line_to( 0 , $y_segment * GRAPH_NO );
-
-    $this_stat_context->fill;
-    $this_stat_highlight_context->stroke;
 
 }
 
