@@ -20,6 +20,8 @@ use Glib qw | TRUE FALSE |;
 
 use Storable;
 
+use constant PI    => 4 * atan2(1, 1);
+
 sub new {
     
     my ( $class, $globals ) = @_;
@@ -364,15 +366,11 @@ sub on_daily_summary_select {
     undef $self->{motion_events_setup};
 
     foreach my $drawing_area ( @{$self->{drawing_areas}} ) {
+        # TODO: disconnect mouse signals? Or does destroying the drawing area automatically destroy the signals?
         $drawing_area->destroy;
     }
 
     $self->{drawing_areas} = [];
-
-#    if ( $self->{drawing_area} ) {
-#        $self->{drawing_area}->destroy;
-#        # TODO: disconnect mouse signal
-#    }
 
     my @selected_dates = $self->{daily_summary}->get_column_value( "reading_date" );
     @{$self->{selected_dates}} = @selected_dates;
@@ -406,20 +404,15 @@ sub load_stats_for_date {
         $sth->execute( $date, $date )
             || die( $sth->errstr );
 
-#        $self->{stat_types}->{ $stat_type }->{stats} = $sth->fetchall_hashref( 'reading_datetime' );
         $self->{stat_types}->{ $stat_type }->{stats_by_date}->{$date} = $sth->fetchall_hashref( 'reading_datetime' );
     }
 
-#    if ( $self->{drawing_area} ) {
-#        $self->{drawing_area}->destroy;
-#        undef $self->{motion_events_setup};
-#        # TODO: disconnect mouse signal
-#    }
+    # TODO: disconnect mouse signal?
+    undef $self->{motion_events_setups}->{$date};
 
-#    $self->{drawing_area} = Gtk3::DrawingArea->new;
     my $drawing_area = Gtk3::DrawingArea->new;
 
-    if ( ! $self->{motion_events_setup} ) {
+    if ( ! $self->{motion_events_setups}->{$date} ) {
 
         $drawing_area->add_events(0x004|0x100|0x200); # TODO - find constants for these - they're events like 'mouse move'
 
@@ -429,10 +422,7 @@ sub load_stats_for_date {
 
     }
 
-    $self->{builder}->get_object( "graph_box" )->pack_start(
-        $drawing_area, 1, 1, 0 );
-
-#    store $self->{stat_types}, "/home/dkasak/stat_types.storable";
+    $self->{builder}->get_object( "graph_box" )->pack_start( $drawing_area, 1, 1, 0 );
 
     $drawing_area->show;
     $drawing_area->signal_connect( draw => sub { $self->render_graph( @_, $date ) } );
@@ -444,8 +434,6 @@ sub load_stats_for_date {
 sub handle_graph_mouse_move {
 
     my ( $self, $widget, $event ) = @_;
-
-    return; # TODO: drawing_areas
 
     $self->{mouse_x} = $event->x;
     $self->{mouse_y} = $event->y;
@@ -460,7 +448,9 @@ sub handle_graph_mouse_move {
 
     if ( ! $self->{mouse_event_queued} ) {
         $self->{mouse_event_queued} = 1;
-        $self->{drawing_area}->queue_draw;
+        foreach my $drawing_area ( @{$self->{drawing_areas}} ) {
+            $drawing_area->queue_draw;
+        }
     }
 
 }
@@ -519,7 +509,7 @@ sub render_graph {
     
     my ( $self, $widget, $cairo_context, $date ) = @_;
 
-    print "render_graph():\n widget: $widget\n context: $cairo_context\n date: $date\n\n";
+#    print "render_graph():\n widget: $widget\n context: $cairo_context\n date: $date\n\n";
 
     #my $surface = $cairo_context->get_target;
     
@@ -686,22 +676,33 @@ sub render_graph {
 
     }
 
-#    my $selection_context = Cairo::Context->create( $surface );
-#    $selection_context->set_source_rgba( 1, 1, 1, 0.2 );
-#    $selection_context->set_line_width( 3 );
-#
-#    foreach my $selection ( @{$self->{graph_selections}} ) {
-#
-#        $selection_context->move_to( $selection->{start_x}, 0 );
-#        $selection_context->line_to( $selection->{start_x}, $y_segment * GRAPH_NO  );
-#        $selection_context->line_to( $selection->{end_x}, $y_segment * GRAPH_NO  ); # undef
-#        $selection_context->line_to( $selection->{end_x}, 0  ); # undef
-#        $selection_context->line_to( $selection->{start_x}, 0  );
-#
-#        #$selection_context->stroke;
-#        $selection_context->fill;
-#
-#    }
+    $cairo_context->set_source_rgba( 1, 1, 1, 0.2 );
+    $cairo_context->set_line_width( 3 );
+
+    foreach my $selection ( @{$self->{graph_selections}} ) {
+
+        $cairo_context->move_to( $selection->{start_x}, 0 );
+        $cairo_context->line_to( $selection->{start_x}, $y_segment * GRAPH_NO  );
+        $cairo_context->line_to( $selection->{end_x}, $y_segment * GRAPH_NO  ); # undef
+        $cairo_context->line_to( $selection->{end_x}, 0  ); # undef
+        $cairo_context->line_to( $selection->{start_x}, 0  );
+
+        #$selection_context->stroke;
+        $cairo_context->fill;
+
+    }
+
+    # Circle around pointer location
+    if ( defined $self->{mouse_x} ) {
+
+        $cairo_context->set_source_rgba( 1, 1, 0, 0.2 );
+        $cairo_context->set_line_width( 2 );
+        $cairo_context->move_to( $self->{mouse_x} , $self->{mouse_y} );
+        $cairo_context->arc( $self->{mouse_x} , $self->{mouse_y} , 7 , 0 , 2 * PI );
+        $cairo_context->fill;
+
+    }
+
 
 }
 
@@ -715,7 +716,7 @@ sub render_graph_series {
 
     my ( $self, $widget, $source, $cairo_context, $date ) = @_;
 
-    print "widget: $widget\ndate: $date\n\n";
+#    print "widget: $widget\ndate: $date\n\n";
 
 #    my $surface = $cairo_context->get_target;
 
