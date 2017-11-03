@@ -47,11 +47,15 @@ sub new {
     # We cache thes value for later - the graph uses them
     $self->{globals}->{Panels_Max_Watts} = $self->{globals}->{config_manager}->simpleGet( "Panels_Max_Watts" ) || 2000;
     $self->{builder}->get_object( "Panels_Max_Watts" )->set_text( $self->{globals}->{Panels_Max_Watts} );
-    $self->{globals}->{Graph_Min_Hour} = defined $self->{globals}->{config_manager}->simpleGet( "Graph_Min_Hour" ) ? $self->{globals}->{config_manager}->simpleGet( "Graph_Min_Hour" ) : 6;
-    $self->{builder}->get_object( "Graph_Min_Hour" )->set_text( $self->{globals}->{Graph_Min_Hour} );
-    $self->{globals}->{Graph_Max_Hour} = defined $self->{globals}->{config_manager}->simpleGet( "Graph_Max_Hour" ) ? $self->{globals}->{config_manager}->simpleGet( "Graph_Max_Hour" ) : 23;
-    $self->{builder}->get_object( "Graph_Max_Hour" )->set_text( $self->{globals}->{Graph_Max_Hour} );
-    
+
+#    $self->{globals}->{Graph_Min_Hour} = defined $self->{globals}->{config_manager}->simpleGet( "Graph_Min_Hour" ) ? $self->{globals}->{config_manager}->simpleGet( "Graph_Min_Hour" ) : 6;
+#    $self->{builder}->get_object( "Graph_Min_Hour" )->set_text( $self->{globals}->{Graph_Min_Hour} );
+#    $self->{globals}->{Graph_Max_Hour} = defined $self->{globals}->{config_manager}->simpleGet( "Graph_Max_Hour" ) ? $self->{globals}->{config_manager}->simpleGet( "Graph_Max_Hour" ) : 23;
+#    $self->{builder}->get_object( "Graph_Max_Hour" )->set_text( $self->{globals}->{Graph_Max_Hour} );
+
+    # Set the initial bounds of the graph(s) ... the whole day
+    $self->on_ZoomOut_clicked();
+
     $self->create_daily_summary_datasheet;
 
     $self->{sources_datasheet} = Gtk3::Ex::DBI::Datasheet->new(
@@ -80,7 +84,7 @@ sub new {
                 }
               , {
                     name        => "colour"
-                    , renderer    => "hidden"
+                  , renderer    => "hidden"
                 }
               , {
                       name        => "sort_order"
@@ -99,6 +103,7 @@ sub new {
                     , renderer    => "image"
                     , x_percent   => 10
                     , custom_render_functions  => [ sub { $self->colour_cell_renderer( @_ ) } ]
+                    , sql_ignore  => 1
                 }
             ]
         }
@@ -168,8 +173,6 @@ sub render_source_colours {
 sub create_daily_summary_datasheet {
 
     my $self = shift;
-
-    warn "in create_daily_summary_datasheet()";
 
     if ( exists $self->{daily_summary} ) {
         $self->{daily_summary}->destroy;
@@ -438,13 +441,10 @@ sub handle_graph_mouse_move {
     $self->{mouse_x} = $event->x;
     $self->{mouse_y} = $event->y;
 
-    if  ( $self->{in_graph_selection_drag} ) {
-#        print "graph selection active!\n";
+    if ( $self->{in_graph_selection_drag} ) {
         $self->{graph_selections}->[ $self->{graph_selection_counter} ]->{end_x} = $self->{mouse_x};
         $self->{graph_selections}->[ $self->{graph_selection_counter} ]->{end_y} = $self->{mouse_y};
     }
-
-#    print "queuing mouse position x: " . $self->{mouse_x} . " y: " . $self->{mouse_y} . "\n";
 
     if ( ! $self->{mouse_event_queued} ) {
         $self->{mouse_event_queued} = 1;
@@ -464,8 +464,6 @@ sub handle_graph_button_press {
     $self->{graph_selections}->[ $self->{graph_selection_counter} ]->{start_x} = $self->{mouse_x};
     $self->{graph_selections}->[ $self->{graph_selection_counter} ]->{start_y} = $self->{mouse_y};
 
-#    print "Click event at x: " . $self->{mouse_x} . " y: " . $self->{mouse_y} . "\n";
-
     $self->{in_graph_selection_drag} = 1;
 
 }
@@ -476,12 +474,6 @@ sub handle_graph_button_release {
 
     $self->{graph_selections}->[ $self->{graph_selection_counter} ]->{end_x} = $self->{mouse_x};
     $self->{graph_selections}->[ $self->{graph_selection_counter} ]->{end_y} = $self->{mouse_y};
-
-#    print "Release event at x: " . $self->{mouse_x} . " y: " . $self->{mouse_y} . "\n";
-
-#    if ( $self->{graph_selections}->[ $self->{graph_selection_counter} ]->{start_x} == $self->{mouse_x} ) {
-#        print "click detected ( as opposed to drag-selection )\n";
-#s    }
 
     $self->{in_graph_selection_drag} = 0;
 
@@ -509,8 +501,7 @@ sub render_graph {
     
     my ( $self, $widget, $cairo_context, $date ) = @_;
 
-#    print "render_graph():\n widget: $widget\n context: $cairo_context\n date: $date\n\n";
-
+    # Do NOT do this:
     #my $surface = $cairo_context->get_target;
     
     # Create a white backing for the graphs
@@ -518,13 +509,12 @@ sub render_graph {
     
     my $total_width  = $widget->get_allocated_width;
     my $total_height = $widget->get_allocated_height;
-    
-#    print "==================================\n";
-#    print "total height: $total_height\n";
-#    print "==================================\n";
-    
-    my $earliest_sec = $self->{globals}->{Graph_Min_Hour} * 3600;
-    my $latest_sec   = $self->{globals}->{Graph_Max_Hour} * 3600;
+
+    $self->{globals}->{total_width} = $total_width;
+
+    my $earliest_sec = $self->{globals}->{Graph_Min_Sec};
+    my $latest_sec   = $self->{globals}->{Graph_Max_Sec};
+
     my $sec_scale    = $total_width / ( $latest_sec - $earliest_sec );
     
     $cairo_context->rectangle( 0, 0, $total_width, $total_height );
@@ -536,7 +526,6 @@ sub render_graph {
     use constant  NO_OF_GRAPHS  => 1;
     use constant  GRAPH_NO      => 1;
 
-#    my $temperature_y_scale    = $graph_area_height / ( $self->{max_heat_sink_temperature} ) / NO_OF_GRAPHS;
     my $ac_power_y_scale       = $graph_area_height / ( $self->{max_ac_power} ) / NO_OF_GRAPHS;
     
     my $y_segment              = $graph_area_height / NO_OF_GRAPHS;
@@ -556,8 +545,11 @@ sub render_graph {
     # Now render the X & Y axis labels and partitioning lines
     $cairo_context->set_source_rgba( 1, 1, 1, 0.4 );
     $cairo_context->set_line_width( 1 );
-    
-    for ( my $hour = $self->{globals}->{Graph_Min_Hour}; $hour <= $self->{globals}->{Graph_Max_Hour}; $hour++ ) {
+
+    my $min_hour = int( $earliest_sec / 60 / 60 );
+    my $max_hour = int( $latest_sec / 60 / 60 );
+
+    for ( my $hour = $min_hour; $hour <= $max_hour; $hour++ ) {
 
         my $date_selection_count = scalar( @{$self->{selected_dates}} );
 
@@ -590,7 +582,6 @@ sub render_graph {
     }
     
     # kw scale
-#    print "Rendering POWER axis ticks ...\n";
     
     my $tick_increment = $self->{max_ac_power} / 4;
 
@@ -639,18 +630,7 @@ sub render_graph {
         $cairo_context->stroke;
 
         # pointer time - calculate where on the x axis ( time ) the pointer is at
-        my $pointer_x_fraction  = 1 - ( ( $total_width - $self->{mouse_x} ) / $total_width );
-        my $pointer_time_offset = ( $self->{globals}->{Graph_Max_Hour} - $self->{globals}->{Graph_Min_Hour} ) * $pointer_x_fraction;
-        my $pointer_time        = $self->{globals}->{Graph_Min_Hour} + $pointer_time_offset;
-
-        my $pointer_hour = int( $pointer_time );
-        my $pointer_hour_fraction = $pointer_time - $pointer_hour;
-        my $pointer_minutes = int( $pointer_hour_fraction * 60 );
-
-#        print "\n\n pointer x fraction:  $pointer_x_fraction\n"
-#                . " pointer time offset: $pointer_time_offset\n"
-#                . " pointer time:        $pointer_time\n"
-#                . " pointer_hour frac:   $pointer_hour_fraction\n";
+        my ( $pointer_hour , $pointer_minutes ) = $self->secs_to_time( $self->pointer_x_to_seconds( $self->{mouse_x} ) );
 
         $self->draw_graph_text(
             $cairo_context
@@ -687,7 +667,6 @@ sub render_graph {
         $cairo_context->line_to( $selection->{end_x}, 0  ); # undef
         $cairo_context->line_to( $selection->{start_x}, 0  );
 
-        #$selection_context->stroke;
         $cairo_context->fill;
 
     }
@@ -706,9 +685,77 @@ sub render_graph {
 
 }
 
-sub pointer_x_to_time {
+sub on_ZoomSelected_clicked {
 
-    # TODO :)
+    my $self = shift;
+
+    # Need to calc *both*, then set, otherwise the 2nd point_x_to_seconds() call uses an incorrect start position
+    my $min = $self->pointer_x_to_seconds(
+        $self->{graph_selections}->[ $self->{graph_selection_counter} ]->{start_x}
+    );
+
+    my $max = $self->pointer_x_to_seconds(
+        $self->{graph_selections}->[ $self->{graph_selection_counter} ]->{end_x}
+    );
+
+    $self->{globals}->{Graph_Min_Sec} = $min;
+    $self->{globals}->{Graph_Max_Sec} = $max;
+
+    $self->clear_selections();
+
+}
+
+sub on_ZoomOut_clicked {
+
+    my $self = shift;
+
+    $self->{globals}->{Graph_Min_Sec} = 0;
+    $self->{globals}->{Graph_Max_Sec} = 24 * 60 * 60;
+
+    $self->clear_selections();
+
+}
+
+sub clear_selections {
+
+    my $self = shift;
+
+    $self->{graph_selections} = [];
+    $self->{graph_selection_counter} = -1;
+
+    foreach my $drawing_area ( @{$self->{drawing_areas}} ) {
+        $drawing_area->queue_draw;
+    }
+
+}
+
+sub pointer_x_to_seconds {
+
+    my ( $self , $x ) = @_;
+
+    my $pointer_x_fraction = 1 - ( ( $self->{globals}->{total_width} - $x ) / $self->{globals}->{total_width} );
+
+    my $pointer_secs_offset = ( $self->{globals}->{Graph_Max_Sec} - $self->{globals}->{Graph_Min_Sec} ) * $pointer_x_fraction;
+    my $pointer_secs = $self->{globals}->{Graph_Min_Sec} + $pointer_secs_offset;
+
+#    my ( $hour , $min ) = $self->secs_to_time( $pointer_secs );
+
+    return $pointer_secs;
+
+}
+
+sub secs_to_time {
+
+    my ( $self , $secs ) = @_;
+
+    my $pointer_hour = int( $secs / 60 / 60 );
+    my $seconds_remainder = $secs - ( $pointer_hour * 60 * 60 );
+    my $pointer_minutes = int ( $seconds_remainder / 60 );
+
+#    print " hour: $pointer_hour\n"
+#        . "  min: $pointer_minutes\n\n";
+
+    return ( $pointer_hour , $pointer_minutes );
 
 }
 
@@ -727,8 +774,12 @@ sub render_graph_series {
 #    print "total height: $total_height\n";
 #    print "==================================\n";
 
-    my $earliest_sec        = $self->{globals}->{Graph_Min_Hour} * 3600;
-    my $latest_sec          = $self->{globals}->{Graph_Max_Hour} * 3600;
+#    my $earliest_sec        = $self->{globals}->{Graph_Min_Hour} * 3600;
+#    my $latest_sec          = $self->{globals}->{Graph_Max_Hour} * 3600;
+
+    my $earliest_sec        = $self->{globals}->{Graph_Min_Sec};
+    my $latest_sec          = $self->{globals}->{Graph_Max_Sec};
+
     my $sec_scale           = $total_width / ( $latest_sec - $earliest_sec );
 
     # We also want a bottom buffer of 20 for the legend
@@ -768,8 +819,8 @@ sub render_graph_series {
 
     }
 
-    $this_stat_gradient->add_color_stop_rgba( 0  , 0.0, 0.0, 0.0, 0.8 );
-    $this_stat_gradient->add_color_stop_rgba( 1  , $red, $green, $blue, 0.8 );
+    $this_stat_gradient->add_color_stop_rgba( 0  , 0.0, 0.0, 0.0, 0.7 );
+    $this_stat_gradient->add_color_stop_rgba( 1  , $red, $green, $blue, 0.7 );
 
     my $stats = $self->{stat_types}->{ $source }->{stats_by_date}->{$date};
 
@@ -780,7 +831,7 @@ sub render_graph_series {
         if ( $pass eq 'regular' ) {
             $cairo_context->set_source( $this_stat_gradient );
         } else {
-            $cairo_context->set_source_rgba( $red_highlight, $green_highlight, $blue_highlight, 0.8 );
+            $cairo_context->set_source_rgba( $red_highlight, $green_highlight, $blue_highlight, 1 );
         }
 
         for my $reading_datetime ( sort keys %{$stats} ) {
