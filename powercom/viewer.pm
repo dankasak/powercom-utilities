@@ -190,7 +190,7 @@ sub create_daily_summary_datasheet {
         "select * from sources order by ( case when source = 'production' then 0 else 1 end )"
     );
 
-    my $from   = "from";
+    my $from   = "\nfrom";
     my $select = "select";
 
     my $fields;
@@ -711,6 +711,9 @@ sub on_ZoomSelected_clicked {
     $self->{globals}->{Graph_Min_Sec} = $min;
     $self->{globals}->{Graph_Max_Sec} = $max;
 
+    # Knock out our cached spline points
+    $self->{spline_points} = {};
+
     $self->clear_selections();
 
 }
@@ -721,6 +724,9 @@ sub on_ZoomOut_clicked {
 
     $self->{globals}->{Graph_Min_Sec} = 0;
     $self->{globals}->{Graph_Max_Sec} = 24 * 60 * 60;
+
+    # Knock out our cached spline points
+    $self->{spline_points} = {};
 
     $self->clear_selections();
 
@@ -851,7 +857,7 @@ sub render_graph_series {
             # First, figure out the *left* *edge* X value of this data.
             # Each figure is an average over time ...
 
-            my $left_secs_past_earliest = $self->time_to_secs( $date, $this_reading->[0] );
+            my $left_secs_past_earliest = $self->time_to_secs( $date, $this_reading->[0] ) - $self->{globals}->{Graph_Min_Sec};
 
             my $this_x_left  = $left_secs_past_earliest * $sec_scale;
             my $this_x_right;
@@ -860,7 +866,7 @@ sub render_graph_series {
             if ( $i != $no_of_readings - 1 ) {
                 # If we're not the last reading of the day, get the next reading
                 my $next_reading = $self->{stat_types}->{ $source }->{stats_array_by_date}->{ $date }->[ $i + 1 ];
-                my $right_secs_past_earliest = $self->time_to_secs( $date, $next_reading->[0] );
+                my $right_secs_past_earliest = $self->time_to_secs( $date, $next_reading->[0] ) - $self->{globals}->{Graph_Min_Sec};
                 $this_x_right = $right_secs_past_earliest * $sec_scale;
                 $last_x_width = $this_x_right - $this_x_left;
             } else {
@@ -870,6 +876,12 @@ sub render_graph_series {
 
             # Finally, the middle point between the 2 edges
             $this_x = ( $this_x_right + $this_x_left ) / 2;
+
+            # Check if this value is without our range ( ie when zooming )
+            if ( $this_x < 0 || $this_x > $total_width
+            ) {
+                next;
+            }
 
             my $value = $this_reading->[1];
 
@@ -911,7 +923,10 @@ sub render_graph_series {
         my $last_x = $x_coords[$#x_coords];
 
         if ( @x_coords && @y_coords ) {
-            foreach my $i ($first_x .. $last_x) {
+#            my $loop_start = max( $first_x , ( $self->{globals}->{Graph_Min_Sec} * $sec_scale ) );
+#            my $loop_end   = min( $last_x , ( $self->{globals}->{Graph_Max_Sec} * $sec_scale ) );
+#            foreach my $i ( $loop_start .. $loop_end ) {
+            foreach my $i ( $first_x .. $last_x ) {
                 push @{$self->{spline_points}->{ $source }->{ $date }} , $i , $spline->evaluate($i);
             }
         }
@@ -937,7 +952,7 @@ sub render_graph_series {
 
         $first_x = $self->{spline_points}->{ $source }->{ $date }->[0];
         $last_x  = $self->{spline_points}->{ $source }->{ $date }->[-2];
-        
+
         while ( ( $x , $y ) = splice( @points, 0, 2 ) ) {
             $cairo_context->line_to( $x, $y );
         }
@@ -997,7 +1012,8 @@ sub time_to_secs {
 
     my $graph_epoch = $datetime->epoch();
 
-    my $secs_diff = $this_epoch - ( $graph_epoch - $self->{globals}->{Graph_Min_Sec} );
+#    my $secs_diff = $this_epoch - ( $graph_epoch + $self->{globals}->{Graph_Min_Sec} );
+    my $secs_diff = $this_epoch - $graph_epoch;
 
     return $secs_diff;
 
@@ -1195,6 +1211,9 @@ sub on_DB_Config_clicked {
     $self->open_window( 'powercom::configuration', $self->{globals} );
 
 }
+
+sub max ($$) { $_[$_[0] < $_[1]] }
+sub min ($$) { $_[$_[0] > $_[1]] }
 
 sub on_viewer_destroy {
     
