@@ -15,6 +15,8 @@ use Pango;
 use Data::Dumper;
 use DateTime;
 use Color::Rgb;
+use Math::Spline;
+use DateTime;
 
 use Glib qw | TRUE FALSE |;
 
@@ -47,6 +49,12 @@ sub new {
     # We cache thes value for later - the graph uses them
     $self->{globals}->{Panels_Max_Watts} = $self->{globals}->{config_manager}->simpleGet( "Panels_Max_Watts" ) || 2000;
     $self->{builder}->get_object( "Panels_Max_Watts" )->set_text( $self->{globals}->{Panels_Max_Watts} );
+
+    $self->{stack} = $self->{builder}->get_object( "stack" );
+    $self->{stack_switcher} = Gtk3::StackSwitcher->new();
+    $self->{stack_switcher}->set_stack( $self->{stack} );
+    $self->{builder}->get_object( 'HeaderBar' )->pack_start( $self->{stack_switcher} );
+    $self->{stack_switcher}->show_all;
 
 #    $self->{globals}->{Graph_Min_Hour} = defined $self->{globals}->{config_manager}->simpleGet( "Graph_Min_Hour" ) ? $self->{globals}->{config_manager}->simpleGet( "Graph_Min_Hour" ) : 6;
 #    $self->{builder}->get_object( "Graph_Min_Hour" )->set_text( $self->{globals}->{Graph_Min_Hour} );
@@ -401,13 +409,15 @@ sub load_stats_for_date {
         my $sth = $self->{globals}->{dbh}->prepare(
             "select reading_datetime, watts * " . $self->{stat_types}->{ $stat_type }->{multiplier} ." as watt_hours\n"
           . "from " . $self->{stat_types}->{ $stat_type }->{dataset_sql} . "\n"
-          . "where reading_datetime between ?::DATE and ?::DATE + interval '1 day'"
+          . "where reading_datetime between ?::DATE and ?::DATE + interval '1 day'\n"
+          . "order by reading_datetime"
         ) || die( $self->{globals}->{dbh}->errstr );
 
         $sth->execute( $date, $date )
             || die( $sth->errstr );
 
-        $self->{stat_types}->{ $stat_type }->{stats_by_date}->{$date} = $sth->fetchall_hashref( 'reading_datetime' );
+        $self->{stat_types}->{ $stat_type }->{stats_array_by_date}->{ $date } = $sth->fetchall_arrayref();
+
     }
 
     # TODO: disconnect mouse signal?
@@ -738,8 +748,6 @@ sub pointer_x_to_seconds {
     my $pointer_secs_offset = ( $self->{globals}->{Graph_Max_Sec} - $self->{globals}->{Graph_Min_Sec} ) * $pointer_x_fraction;
     my $pointer_secs = $self->{globals}->{Graph_Min_Sec} + $pointer_secs_offset;
 
-#    my ( $hour , $min ) = $self->secs_to_time( $pointer_secs );
-
     return $pointer_secs;
 
 }
@@ -752,9 +760,6 @@ sub secs_to_time {
     my $seconds_remainder = $secs - ( $pointer_hour * 60 * 60 );
     my $pointer_minutes = int ( $seconds_remainder / 60 );
 
-#    print " hour: $pointer_hour\n"
-#        . "  min: $pointer_minutes\n\n";
-
     return ( $pointer_hour , $pointer_minutes );
 
 }
@@ -763,19 +768,8 @@ sub render_graph_series {
 
     my ( $self, $widget, $source, $cairo_context, $date ) = @_;
 
-#    print "widget: $widget\ndate: $date\n\n";
-
-#    my $surface = $cairo_context->get_target;
-
     my $total_width  = $widget->get_allocated_width;
     my $total_height = $widget->get_allocated_height;
-
-#    print "==================================\n";
-#    print "total height: $total_height\n";
-#    print "==================================\n";
-
-#    my $earliest_sec        = $self->{globals}->{Graph_Min_Hour} * 3600;
-#    my $latest_sec          = $self->{globals}->{Graph_Max_Hour} * 3600;
 
     my $earliest_sec        = $self->{globals}->{Graph_Min_Sec};
     my $latest_sec          = $self->{globals}->{Graph_Max_Sec};
@@ -822,11 +816,112 @@ sub render_graph_series {
     $this_stat_gradient->add_color_stop_rgba( 0  , 0.0, 0.0, 0.0, 0.7 );
     $this_stat_gradient->add_color_stop_rgba( 1  , $red, $green, $blue, 0.7 );
 
-    my $stats = $self->{stat_types}->{ $source }->{stats_by_date}->{$date};
+    # First we loop over each reading, and build a list of x & y co-ordinates that represent the *average* value for each reading
+    my ( @x_coords , @y_coords );
+
+    my $no_of_readings = @{ $self->{stat_types}->{ $source }->{stats_array_by_date}->{ $date } };
+
+    my ( $last_x_width , $this_x );
+
+    my $base_y_value = ( $y_segment * GRAPH_NO );
+
+    # NOTE: When we create more than 2 DrawingAreas, I'm seeing minor ( ie 1 ) pixel differences
+    # in the total width between render() calls. Recalculating the bezier curves is expensive, so
+    # we only do it if there is a difference of > 1 pixel ...
+
+    if ( abs( $self->{last_graph_width} - $total_width ) > 2
+      || abs( $self->{last_graph_height} - $total_height ) > 2
+      || ! $self->{spline_points}->{ $source }->{ $date }
+    ) {
+
+        if ( abs( $self->{last_graph_width} - $total_width ) > 2
+          || abs( $self->{last_graph_height} - $total_height ) > 2
+        ) {
+            # If we've resized, clear out all the calculated points, or only the 1st set will get regenerated
+            $self->{spline_points} = {};
+        }
+
+        my $last_y;
+
+        # Need to calculate new spline points ...
+        foreach my $i ( 0 .. $no_of_readings - 1 ) {
+
+            my $this_reading = $self->{stat_types}->{ $source }->{stats_array_by_date}->{ $date }->[ $i ];
+
+            # First, figure out the *left* *edge* X value of this data.
+            # Each figure is an average over time ...
+
+            my $left_secs_past_earliest = $self->time_to_secs( $date, $this_reading->[0] );
+
+            my $this_x_left  = $left_secs_past_earliest * $sec_scale;
+            my $this_x_right;
+
+            # Now the right edge
+            if ( $i != $no_of_readings - 1 ) {
+                # If we're not the last reading of the day, get the next reading
+                my $next_reading = $self->{stat_types}->{ $source }->{stats_array_by_date}->{ $date }->[ $i + 1 ];
+                my $right_secs_past_earliest = $self->time_to_secs( $date, $next_reading->[0] );
+                $this_x_right = $right_secs_past_earliest * $sec_scale;
+                $last_x_width = $this_x_right - $this_x_left;
+            } else {
+                # If we are the last reading of the day, use the width of the previous reading
+                $this_x_right = $this_x_left + $last_x_width;
+            }
+
+            # Finally, the middle point between the 2 edges
+            $this_x = ( $this_x_right + $this_x_left ) / 2;
+
+            my $value = $this_reading->[1];
+
+            # For Y values, 0 is the top of the area
+            # So the formula for calculating the Y value is:
+            #  BASE OF GRAPH - HEIGHT
+
+            my $this_y = $base_y_value - ( $value * $this_stat_y_scale );
+
+            if ( ! defined $last_y && $this_y != $base_y_value ) {
+
+                # If we're on the *first* reading ( ! defined $last_y ), and it's *not* a baseline reading,
+                # then inject one, just before ( x axis ) this reading
+                push @x_coords, $this_x - 1;
+                push @y_coords, $base_y_value;
+                $last_y = $this_y;
+
+            }
+
+            push @x_coords, $this_x;
+            push @y_coords, $this_y;
+
+            if ( $i == $no_of_readings - 1 ) {
+
+                # If we are the last reading of the day, push another point, touching the baseline
+
+                $this_x = $this_x + ( $this_x_right - $this_x_left );
+                push @x_coords, $this_x + 1;
+                push @y_coords, $base_y_value;
+            }
+
+        }
+
+        my $spline = Math::Spline->new( \@x_coords , \@y_coords );
+
+        $self->{spline_points}->{ $source }->{ $date } = [];
+
+        my $first_x = $x_coords[0];
+        my $last_x = $x_coords[$#x_coords];
+
+        if ( @x_coords && @y_coords ) {
+            foreach my $i ($first_x .. $last_x) {
+                push @{$self->{spline_points}->{ $source }->{ $date }} , $i , $spline->evaluate($i);
+            }
+        }
+
+        $self->{last_graph_width}  = $total_width;
+        $self->{last_graph_height} = $total_height;
+
+    }
 
     foreach my $pass ( qw | regular highlight | ) {
-
-        my ( $first_x , $last_x, $y_bar_memory ); # memory for where to start and close off the sides of the graph, and the Y of the previous bar ( start )
 
         if ( $pass eq 'regular' ) {
             $cairo_context->set_source( $this_stat_gradient );
@@ -834,67 +929,27 @@ sub render_graph_series {
             $cairo_context->set_source_rgba( $red_highlight, $green_highlight, $blue_highlight, 1 );
         }
 
-        for my $reading_datetime ( sort keys %{$stats} ) {
+        $cairo_context->move_to( 0 , $base_y_value );
 
-            # First, figure out the X value of this data
-            my ( $hour, $min, $sec );
+        my @points = @{ $self->{spline_points}->{ $source }->{ $date } };
 
-            if ( $reading_datetime =~ /\d{4}-\d{2}-\d{2}\s(\d{2}):(\d{2}):(\d{2})/ ) {
-                ( $hour, $min, $sec ) = ( $1, $2, $3 );
-            } else {
-                die( "Failed to parse datetime: [$reading_datetime]" );
-            }
+        my ( $x , $y , $first_x , $last_x );
 
-            # TODO: include date component, to support multi-day graphs
-            my $secs_past_earliest = ( ( $hour * 3600 ) + ( $min * 60 ) + $sec ) - $earliest_sec;
-
-            # TODO: hack for final ( midnight ) reading - remove
-            # TODO: this also won't work for multi-day graphs
-
-            if ( $hour eq '00' && $min eq '00' && $sec eq '00' && defined $first_x ) {
-                $hour = 24;
-                $secs_past_earliest = ( ( $hour * 3600 ) + ( $min * 60 ) + $sec ) - $earliest_sec;
-            }
-
-            my $this_x = $secs_past_earliest * $sec_scale;
-
-            if ( ! defined $first_x ) {
-                $y_bar_memory = $y_segment * GRAPH_NO;
-                $cairo_context->move_to( $this_x, $y_segment * GRAPH_NO );
-                $first_x = $this_x;
-            }
-
-            # For Y values, 0 is the top of the area
-            # So the formula for calculating the Y value is:
-            #  BASE OF GRAPH - HEIGHT
-
-            my $value = $stats->{ $reading_datetime }->{watt_hours};
-
-            # For the current bar, we just trace our ceiling, and at the end, close it off
-            # along the bottom of the graph area
-
-            my $this_y = ( $y_segment * GRAPH_NO ) - ( $value * $this_stat_y_scale );
-
-            # Don't draw directly to the next point. We want *bars* that represent the average across
-            # the time ( x span ) of the ( previous ) reading
-
-            $cairo_context->line_to( $this_x, $y_bar_memory );
-            $y_bar_memory = $this_y;
-
-            # Now draw to our current value start
-            $cairo_context->line_to( $this_x, $this_y );
-
-            $last_x = $this_x;
-
+        $first_x = $self->{spline_points}->{ $source }->{ $date }->[0];
+        $last_x  = $self->{spline_points}->{ $source }->{ $date }->[-2];
+        
+        while ( ( $x , $y ) = splice( @points, 0, 2 ) ) {
+            $cairo_context->line_to( $x, $y );
         }
 
         {
             no warnings 'uninitialized';
-            $cairo_context->line_to( $last_x , $y_segment * GRAPH_NO );
+            $cairo_context->line_to( $last_x , $base_y_value );
+            $cairo_context->line_to( $first_x , $base_y_value );
         }
 
         if ( $pass eq 'regular' ) {
-            $cairo_context->line_to(0 , $y_segment * GRAPH_NO);
+            $cairo_context->line_to( $first_x , $base_y_value );
             $cairo_context->fill;
         } else {
             $cairo_context->stroke;
@@ -904,11 +959,53 @@ sub render_graph_series {
 
 }
 
+sub time_to_secs {
+
+    my ( $self , $date , $time ) = @_;
+
+    my ( $year , $month , $day , $hour , $min , $sec );
+
+    if ( $time =~ /(\d{4})-(\d{2})-(\d{2})\s(\d{2}):(\d{2}):(\d{2})/ ) {
+        ( $year , $month, $day , $hour , $min , $sec ) = ( $1 , $2 , $3 , $4 , $5 , $6 );
+    } else {
+        die( "Failed to parse datetime: [ $time ]" );
+    }
+
+    my $datetime = DateTime->new(
+        year       => $year
+      , month      => $month
+      , day        => $day
+      , hour       => $hour
+      , minute     => $min
+      , second     => $sec
+    );
+
+    my $this_epoch = $datetime->epoch();
+
+    if ( $date =~ /(\d{4})-(\d{2})-(\d{2})/ ) {
+        ( $year , $month , $day ) = ( $1 , $2 , $3 );
+    }
+
+    $datetime  = DateTime->new(
+        year       => $year
+      , month      => $month
+      , day        => $day
+      , hour       => 0
+      , minute     => 0
+      , second     => 0
+    );
+
+    my $graph_epoch = $datetime->epoch();
+
+    my $secs_diff = $this_epoch - ( $graph_epoch - $self->{globals}->{Graph_Min_Sec} );
+
+    return $secs_diff;
+
+}
+
 sub draw_graph_text {
     
     my ( $self, $cr, $text, $angle, $x, $y ) = @_;
-
-#    print "Writing [$text] at x [$x] y [$y]\n";
     
     my $layout = Pango::Cairo::create_layout( $cr );
     $layout->set_text( $text );

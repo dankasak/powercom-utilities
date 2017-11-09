@@ -44,7 +44,6 @@ You can select a colour for each source by highlighting the source record and cl
     <property name="width_request">1024</property>
     <property name="height_request">640</property>
     <property name="can_focus">False</property>
-    <property name="title" translatable="yes">Energy Monitor</property>
     <signal name="destroy" handler="on_viewer_destroy" after="yes" swapped="no"/>
     <child>
       <object class="GtkPaned" id="paned1">
@@ -71,9 +70,10 @@ You can select a colour for each source by highlighting the source record and cl
             <property name="can_focus">False</property>
             <property name="orientation">vertical</property>
             <child>
-              <object class="GtkNotebook">
+              <object class="GtkStack" id="stack">
                 <property name="visible">True</property>
-                <property name="can_focus">True</property>
+                <property name="can_focus">False</property>
+                <property name="transition_type">crossfade</property>
                 <child>
                   <object class="GtkBox" id="box3">
                     <property name="visible">True</property>
@@ -288,15 +288,9 @@ You can select a colour for each source by highlighting the source record and cl
                       </packing>
                     </child>
                   </object>
-                </child>
-                <child type="tab">
-                  <object class="GtkLabel">
-                    <property name="visible">True</property>
-                    <property name="can_focus">False</property>
-                    <property name="label" translatable="yes">daily summary</property>
-                  </object>
                   <packing>
-                    <property name="tab_fill">False</property>
+                    <property name="name">Summary</property>
+                    <property name="title" translatable="yes">Summary</property>
                   </packing>
                 </child>
                 <child>
@@ -354,18 +348,9 @@ You can select a colour for each source by highlighting the source record and cl
                     </child>
                   </object>
                   <packing>
+                    <property name="name">Stats Setup</property>
+                    <property name="title" translatable="yes">Stats Setup</property>
                     <property name="position">1</property>
-                  </packing>
-                </child>
-                <child type="tab">
-                  <object class="GtkLabel">
-                    <property name="visible">True</property>
-                    <property name="can_focus">False</property>
-                    <property name="label" translatable="yes">sources</property>
-                  </object>
-                  <packing>
-                    <property name="position">1</property>
-                    <property name="tab_fill">False</property>
                   </packing>
                 </child>
                 <child>
@@ -760,25 +745,16 @@ You can select a colour for each source by highlighting the source record and cl
                     </child>
                   </object>
                   <packing>
+                    <property name="name">Misc</property>
+                    <property name="title" translatable="yes">Misc</property>
                     <property name="position">2</property>
-                  </packing>
-                </child>
-                <child type="tab">
-                  <object class="GtkLabel">
-                    <property name="visible">True</property>
-                    <property name="can_focus">False</property>
-                    <property name="label" translatable="yes">miscellanous</property>
-                  </object>
-                  <packing>
-                    <property name="position">2</property>
-                    <property name="tab_fill">False</property>
                   </packing>
                 </child>
               </object>
               <packing>
                 <property name="expand">True</property>
                 <property name="fill">True</property>
-                <property name="position">0</property>
+                <property name="position">1</property>
               </packing>
             </child>
             <child>
@@ -790,7 +766,7 @@ You can select a colour for each source by highlighting the source record and cl
               <packing>
                 <property name="expand">False</property>
                 <property name="fill">True</property>
-                <property name="position">1</property>
+                <property name="position">2</property>
               </packing>
             </child>
           </object>
@@ -798,6 +774,18 @@ You can select a colour for each source by highlighting the source record and cl
             <property name="resize">True</property>
             <property name="shrink">True</property>
           </packing>
+        </child>
+      </object>
+    </child>
+    <child type="titlebar">
+      <object class="GtkHeaderBar" id="HeaderBar">
+        <property name="visible">True</property>
+        <property name="can_focus">False</property>
+        <property name="title">Energy Monitor</property>
+        <property name="has_subtitle">False</property>
+        <property name="show_close_button">True</property>
+        <child>
+          <placeholder/>
         </child>
       </object>
     </child>
