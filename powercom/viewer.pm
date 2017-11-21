@@ -34,7 +34,7 @@ sub new {
     
     $self->{builder} = Gtk3::Builder->new;
     
-    $self->{builder}->add_objects_from_file( "$self->{globals}->{builder_dir}/viewer.ui", "viewer", "howto_buffer" );
+    $self->{builder}->add_objects_from_file( "$self->{globals}->{builder_dir}/viewer.ui", "viewer", "howto_buffer", "adjustment1" );
     
     $self->{builder}->connect_signals( undef, $self );
     
@@ -128,7 +128,13 @@ sub new {
     $self->{sources_datasheet}->{recordset_tools_box}->show_all;
 
     $self->create_source_datasheets;
-
+    
+    my $adjustment = $self->{builder}->get_object( "adjustment1" );
+    $adjustment->signal_connect( 'value-changed', sub { $self->on_vertical_adjustment( @ _ ) } );
+    $adjustment->set_value( $self->{globals}->{Panels_Max_Watts} );
+#    $adjustment->set_upper( 20000 );
+#    $adjustment->set_step_increment( 100 );
+    
     $self->{builder}->get_object( "pvoutput_info" )->get_buffer->set_text(
         "PV Output is a website for uploading and comparing your generation statistics.\n"
       . "Create an account at http://www.pvoutput.org/ and enter your details here."
@@ -136,6 +142,31 @@ sub new {
     
     return $self;
 
+}
+
+sub on_vertical_adjustment {
+    
+    my ( $self, $widget ) = @_;
+    
+    $self->{spline_points} = {};
+    
+    my $value = $widget->get_value();
+    
+    my $rounded_value = int( $value / 100 ) * 100;
+    
+    if ( $rounded_value == $self->{globals}->{Panels_Max_Watts} ) {
+        return;
+    }
+    
+    $self->{globals}->{Panels_Max_Watts} = $rounded_value;
+    $self->{max_ac_power} = $self->{globals}->{Panels_Max_Watts};
+    
+    foreach my $drawing_area ( @{$self->{drawing_areas}} ) {
+        $drawing_area->queue_draw;
+    }
+    
+    $self->{globals}->{config_manager}->simpleSet( "Graph_Max_Hour", $rounded_value );
+    
 }
 
 sub render_source_colours {
