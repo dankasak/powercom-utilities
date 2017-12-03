@@ -440,7 +440,7 @@ sub load_stats_for_date {
         my $sth = $self->{globals}->{dbh}->prepare(
             "select reading_datetime, watts * " . $self->{stat_types}->{ $stat_type }->{multiplier} ." as watt_hours\n"
           . "from " . $self->{stat_types}->{ $stat_type }->{dataset_sql} . "\n"
-          . "where reading_datetime between ?::DATE and ?::DATE + interval '1 day'\n"
+          . "where reading_datetime between ?::DATE - interval '1 hour' and ?::DATE + interval '1 day 1 hour'\n"
           . "order by reading_datetime"
         ) || die( $self->{globals}->{dbh}->errstr );
 
@@ -908,12 +908,6 @@ sub render_graph_series {
             # Finally, the middle point between the 2 edges
             $this_x = ( $this_x_right + $this_x_left ) / 2;
 
-            # Check if this value is without our range ( ie when zooming )
-            if ( $this_x < 0 || $this_x > $total_width
-            ) {
-                next;
-            }
-
             my $value = $this_reading->[1];
 
             # For Y values, 0 is the top of the area
@@ -922,15 +916,22 @@ sub render_graph_series {
 
             my $this_y = $base_y_value - ( $value * $this_stat_y_scale );
 
-            if ( ! defined $last_y && $this_y != $base_y_value ) {
-
-                # If we're on the *first* reading ( ! defined $last_y ), and it's *not* a baseline reading,
-                # then inject one, just before ( x axis ) this reading
-                push @x_coords, $this_x - 1;
-                push @y_coords, $base_y_value;
-                $last_y = $this_y;
-
-            }
+            # Check if this value is within our range ( ie when zooming )
+#            if ( $this_x < 0 || $this_x > $total_width
+#            ) {
+#                $last_y = $this_y;
+#                next;
+#            }
+#
+#            if ( ! defined $last_y && $this_y != $base_y_value ) {
+#
+#                # If we're on the *first* reading ( ! defined $last_y ), and it's *not* a baseline reading,
+#                # then inject one, just before ( x axis ) this reading
+#                push @x_coords, $this_x - 1;
+#                push @y_coords, $base_y_value;
+#                $last_y = $this_y;
+#
+#            }
 
             push @x_coords, $this_x;
             push @y_coords, $this_y;
