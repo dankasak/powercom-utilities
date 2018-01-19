@@ -241,7 +241,7 @@ sub create_daily_summary_datasheet {
         if ( $source->{source} ne 'production' ) {
 
             $select .= "\n  , " . $source->{source} . ".watt_hours"
-                     . "\n  , " . $source->{source} . ".watt_hours / 1000 * " . ( $source->{cost_per_kwh} ? $source->{cost_per_kwh} : 0 );
+                     . "\n  , round( " . $source->{source} . ".watt_hours::numeric / 1000 * " . ( $source->{cost_per_kwh} ? $source->{cost_per_kwh} : 0 ) . " , 2 )";
             $from .= "\nleft join    " . $source->{summary_sql} . " " . $source->{source} . " on " . $source->{source} . ".reading_date = production.reading_date";
 
             push
@@ -268,7 +268,7 @@ sub create_daily_summary_datasheet {
 
             $select .= "\n    production.reading_date"
                      . "\n  , production.watt_hours"
-                     . "\n  , production.watt_hours / 1000 * " . ( $source->{cost_per_kwh} ? $source->{cost_per_kwh} : 0 );
+                     . "\n  , round( production.watt_hours::numeric / 1000 * " . ( $source->{cost_per_kwh} ? $source->{cost_per_kwh} : 0 ) . " , 2 )";
             $from .= "\n             " . $source->{summary_sql} . " " . $source->{source};
 
             push
