@@ -14,7 +14,6 @@ use Pango;
 
 use Data::Dumper;
 use DateTime;
-use Color::Rgb;
 use Math::Spline;
 use DateTime;
 
@@ -227,8 +226,6 @@ sub create_daily_summary_datasheet {
     my $fields;
     my $num_of_source = @$summary_sources;
 
-    my $rgb = Color::Rgb->new( rgb_txt => '/usr/share/X11/rgb.txt' );
-
     foreach my $source ( @{$summary_sources} ) {
 
         my $rgb_string = $source->{colour};
@@ -248,14 +245,14 @@ sub create_daily_summary_datasheet {
                 @{$fields}
               , {
                     name       => $source->{source} . " kWh"
-                  , header_markup => "<span color='#" . $rgb->rgb2hex( @rgb ) . "' weight='bold'>" . $source->{source} . " kWh</span>"
+                  , header_markup => "<span color='#" . $self->rgbToHex( @rgb ) . "' weight='bold'>" . $source->{source} . " kWh</span>"
                   , x_percent  => 75 / $num_of_source
                   , renderer   => "progress"
                   , custom_render_functions => [ sub { $self->summary_progress_renderer( @_ ) } ]
                 }
               , {
                     name       => $source->{source} . " cost"
-                  , header_markup => "<span color='#" . $rgb->rgb2hex( @rgb ) . "' weight='bold'>\$</span>"
+                  , header_markup => "<span color='#" . $self->rgbToHex( @rgb ) . "' weight='bold'>\$</span>"
                   , x_percent  => 25 / $num_of_source
                   , renderer   => "number"
 #                  , number     => {
@@ -279,14 +276,14 @@ sub create_daily_summary_datasheet {
                 }
               , {
                     name       => $source->{source} . " kWh"
-                  , header_markup => "<span color='#" . $rgb->rgb2hex( @rgb ) . "' weight='bold'>" . $source->{source} . " kWh</span>"
+                  , header_markup => "<span color='#" . $self->rgbToHex( @rgb ) . "' weight='bold'>" . $source->{source} . " kWh</span>"
                   , x_percent  => 75 / $num_of_source
                   , renderer   => "progress"
                   , custom_render_functions => [ sub { $self->summary_progress_renderer( @_ ) } ]
                 }
               , {
                     name       => $source->{source} . " cost"
-                  , header_markup => "<span color='#" . $rgb->rgb2hex( @rgb ) . "' weight='bold'>\$</span>"
+                  , header_markup => "<span color='#" . $self->rgbToHex( @rgb ) . "' weight='bold'>\$</span>"
                   , x_percent  => 25 / $num_of_source
                   , renderer   => "number"
             };
@@ -312,6 +309,13 @@ sub create_daily_summary_datasheet {
           , multi_select    => 1
         }
     );
+
+}
+
+sub rgbToHex {
+
+    my ( $self , $red , $green , $blue ) = @_;
+    return sprintf("%2.2X%2.2X%2.2X" , $red , $green , $blue );
 
 }
 
@@ -345,11 +349,20 @@ sub colour_cell_renderer {
 
     my ( $self, $column, $renderer, $model, $iter ) = @_;
 
-    my $source_name = $model->get( $iter, $self->{sources_datasheet}->column_from_column_name( 'source' ) );
+    #my $source_name = $model->get( $iter, $self->{sources_datasheet}->column_from_column_name( 'source' ) );
 
 #    print "renderer activated for [$source_name]\n";
 
-    $renderer->set( 'pixbuf' => $self->{rendered_colour_pixbufs}->{ $source_name } );
+    #$renderer->set( 'pixbuf' => $self->{rendered_colour_pixbufs}->{ $source_name } );
+
+    my $colour_rgb = $model->get( $iter, $self->{sources_datasheet}->column_from_column_name( 'colour' ) );
+
+    $renderer->set(
+        "cell-background", $colour_rgb
+      , "cell-background-set", TRUE
+    );
+
+    return FALSE;
 
 }
 
@@ -761,6 +774,30 @@ sub on_ZoomOut_clicked {
 
     $self->clear_selections();
 
+}
+
+sub on_Fullscreen_clicked {
+    
+    my $self = shift;
+    
+    if ( ! $self->{fullscreen} ) {
+        
+        $self->{fullscreen} = 1;
+        
+#        $self->{Paned_normal_state} = $self->{builder}->get_object( 'paned1' )->get_position;
+        print $self->{Paned_normal_state} . "\n";
+#        $self->{builder}->get_object( 'paned1' )->set_position( 1 );
+        
+        $self->{builder}->get_object( "daily_summary_box" )->hide;
+        
+    } else {
+        
+        $self->{fullscreen} = 0;
+#        $self->{builder}->get_object( 'paned1' )->set_position( $self->{Paned_normal_state} );
+        $self->{builder}->get_object( "daily_summary_box" )->show;
+        
+    }
+    
 }
 
 sub clear_selections {

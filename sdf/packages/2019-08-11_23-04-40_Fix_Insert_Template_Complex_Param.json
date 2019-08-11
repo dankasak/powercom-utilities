@@ -1,0 +1,18 @@
+{
+   "release" : {
+      "RELEASE_OPEN" : 0,
+      "REPOSITORY" : "sdf_powercom",
+      "RELEASE_BASE" : null,
+      "RELEASE_NAME" : "2019-08-11_23-04-40_Fix_Insert_Template_Complex_Param",
+      "PACKAGE_DATETIME" : "2019-08-11 23:05:38.389088"
+   },
+   "release_packages" : [
+      {
+         "RELEASE_PACKAGE" : "powershop_dev.2019-08-11_23-05-23.dkasak.json",
+         "OBJECT_CHANGED" : 1,
+         "RELEASE_NAME" : "2019-08-11_23-04-40_Fix_Insert_Template_Complex_Param",
+         "PACKAGE_TYPE" : "job",
+         "OBJECT_NAME" : "powershop_dev"
+      }
+   ]
+}

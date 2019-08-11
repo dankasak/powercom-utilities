@@ -1,0 +1,18 @@
+{
+   "release_packages" : [
+      {
+         "OBJECT_CHANGED" : 1,
+         "RELEASE_PACKAGE" : "powershop_dev.2019-01-25_17-17-21.viator.json",
+         "RELEASE_NAME" : "2019-01-25_17-17-05_powercom_etl",
+         "PACKAGE_TYPE" : "job",
+         "OBJECT_NAME" : "powershop_dev"
+      }
+   ],
+   "release" : {
+      "RELEASE_OPEN" : 0,
+      "PACKAGE_DATETIME" : "2019-01-25 17:17:43.157772",
+      "RELEASE_NAME" : "2019-01-25_17-17-05_powercom_etl",
+      "REPOSITORY" : "sdf_powercom",
+      "RELEASE_BASE" : null
+   }
+}
